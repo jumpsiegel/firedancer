@@ -234,8 +234,7 @@ static int parse_key_value( config_t *   config,
   ENTRY_UINT  ( ., layout,              bank_tile_count                                           );
   ENTRY_UINT  ( ., layout,              shred_tile_count                                          );
 
-  ENTRY_STR   ( ., hugetlbfs,           gigantic_page_mount_path                                  );
-  ENTRY_STR   ( ., hugetlbfs,           huge_page_mount_path                                      );
+  ENTRY_STR   ( ., hugetlbfs,           mount_path                                                );
 
   ENTRY_STR   ( ., tiles.net,           interface                                                 );
   ENTRY_STR   ( ., tiles.net,           xdp_mode                                                  );
@@ -1124,6 +1123,28 @@ config_parse( int *      pargc,
     FD_LOG_ERR(( "running as uid %i, but config specifies uid %i", getuid(), config->uid ));
   if( FD_UNLIKELY( getgid() != 0 && config->gid != getgid() ) )
     FD_LOG_ERR(( "running as gid %i, but config specifies gid %i", getgid(), config->gid ));
+
+  const char * shmem_path = fd_env_strip_cmdline_cstr( pargc, pargv, "--shmem-path","FD_SHMEM_PATH", NULL );
+  if( FD_UNLIKELY( shmem_path ) ) {
+    strncpy( config->hugetlbfs.mount_path, shmem_path, sizeof( config->hugetlbfs.mount_path )-1 );
+  }
+  ulong len = strlen( config->hugetlbfs.mount_path );
+  while( ( len>1UL ) && ( config->hugetlbfs.mount_path[ len-1UL ]=='/' ) ) {
+    /* remove trailing slashes */
+    config->hugetlbfs.mount_path[ len-1UL ] = '\0';
+    len--;
+  }
+  if( FD_UNLIKELY( !len ) ) FD_LOG_ERR(( "Bad path for [hugetlbfs.mount_path] in config" ));
+  FD_TEST( fd_cstr_printf_check( config->hugetlbfs.gigantic_page_mount_path,
+                                 sizeof(config->hugetlbfs.gigantic_page_mount_path),
+                                 NULL,
+                                 "%s/.gigantic",
+                                 config->hugetlbfs.mount_path ) );
+  FD_TEST( fd_cstr_printf_check( config->hugetlbfs.huge_page_mount_path,
+                                 sizeof(config->hugetlbfs.huge_page_mount_path),
+                                 NULL,
+                                 "%s/.huge",
+                                 config->hugetlbfs.mount_path ) );
 
   replace( config->log.path, "{user}", config->user );
   replace( config->log.path, "{name}", config->name );

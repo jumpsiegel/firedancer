@@ -503,8 +503,11 @@ fd_shmem_page_sz_to_cstr( ulong page_sz );
 /* These functions are for fd_shmem internal use only. */
 
 void
-fd_shmem_private_boot( int *    pargc,
-                       char *** pargv );
+fd_shmem_boot( int *    pargc,
+               char *** pargv );
+
+void
+fd_shmem_private_boot( char const * shmem_base );
 
 void
 fd_shmem_private_halt( void );

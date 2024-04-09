@@ -174,7 +174,7 @@ fdctl_boot( int *        pargc,
                               config->log.log_fd,
                               log_path );
   config->log.log_fd = fd_log_private_logfile_fd();
-  fd_shmem_private_boot( pargc, pargv );;
+  fd_shmem_private_boot( config->hugetlbfs.mount_path );
   fd_tile_private_boot( 0, NULL );
 
   /* Kind of a hack but initializing NUMA config depends on shmem, which

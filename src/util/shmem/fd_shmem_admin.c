@@ -655,8 +655,7 @@ fd_shmem_page_sz_to_cstr( ulong page_sz ) {
 /* BOOT/HALT APIs *****************************************************/
 
 void
-fd_shmem_private_boot( int *    pargc,
-                       char *** pargv ) {
+fd_shmem_private_boot( char const * shmem_path ) {
   FD_LOG_INFO(( "fd_shmem: booting" ));
 
   /* Initialize the phtread mutex */
@@ -701,13 +700,11 @@ fd_shmem_private_boot( int *    pargc,
 
   /* Determine the shared memory domain for this thread group */
 
-  char const * shmem_base = fd_env_strip_cmdline_cstr( pargc, pargv, "--shmem-path", "FD_SHMEM_PATH", "/mnt/.fd" );
-
-  ulong len = strlen( shmem_base );
-  while( (len>1UL) && (shmem_base[len-1UL]=='/') ) len--; /* lop off any trailing slashes */
-  if( FD_UNLIKELY( !len ) ) FD_LOG_ERR(( "Too short --shmem-base" ));
-  if( FD_UNLIKELY( len>=FD_SHMEM_PRIVATE_BASE_MAX ) ) FD_LOG_ERR(( "Too long --shmem-base" ));
-  fd_memcpy( fd_shmem_private_base, shmem_base, len );
+  ulong len = strlen( shmem_path );
+  while( (len>1UL) && (shmem_path[len-1UL]=='/') ) len--; /* lop off any trailing slashes */
+  if( FD_UNLIKELY( !len ) ) FD_LOG_ERR(( "Too short --shmem-path" ));
+  if( FD_UNLIKELY( len>=FD_SHMEM_PRIVATE_BASE_MAX ) ) FD_LOG_ERR(( "Too long --shmem-path" ));
+  fd_memcpy( fd_shmem_private_base, shmem_path, len );
   fd_shmem_private_base[len] = '\0';
   fd_shmem_private_base_len = (ulong)len;
 
@@ -741,15 +738,8 @@ fd_shmem_private_halt( void ) {
 #else /* unhosted */
 
 void
-fd_shmem_private_boot( int *    pargc,
-                       char *** pargv ) {
+fd_shmem_private_boot( char const * shmem_path ) {
   FD_LOG_INFO(( "fd_shmem: booting" ));
-
-  /* Strip the command line even though ignored to make environment
-     parsing identical to downstream regardless of platform. */
-
-  (void)fd_env_strip_cmdline_cstr( pargc, pargv, "--shmem-path", "FD_SHMEM_PATH", "/mnt/.fd" );
-
   FD_LOG_INFO(( "fd_shmem: --shmem-path (ignored)" ));
   FD_LOG_INFO(( "fd_shmem: boot success" ));
 }
@@ -761,3 +751,10 @@ fd_shmem_private_halt( void ) {
 }
 
 #endif
+
+void
+fd_shmem_boot( int *    pargc,
+               char *** pargv ) {
+  char const * shmem_path = fd_env_strip_cmdline_cstr( pargc, pargv, "--shmem-path", "FD_SHMEM_PATH", "/mnt/.fd" );
+  fd_shmem_private_boot( shmem_path );
+}
