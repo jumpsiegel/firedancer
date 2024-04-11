@@ -23,6 +23,9 @@
 
 #include "../../util/tile/fd_tile_private.h"
 
+// TODO replace with config
+#define quic_enabled 1
+
 void
 bench_cmd_perm( args_t *         args,
                 fd_caps_ctx_t *  caps,
@@ -113,12 +116,16 @@ bench_cmd_fn( args_t *         args,
               config_t * const config ) {
   (void)args;
 
+  ushort dest_port = fd_ushort_if( quic_enabled,
+                                   config->tiles.quic.quic_transaction_listen_port,
+                                   config->tiles.quic.regular_transaction_listen_port );
+
   add_bench_topo( &config->topo,
                   config->development.bench.affinity,
                   config->development.bench.benchg_tile_count,
                   config->development.bench.benchs_tile_count,
                   config->development.genesis.fund_initial_accounts,
-                  config->tiles.quic.regular_transaction_listen_port,
+                  dest_port,
                   config->tiles.net.ip_addr,
                   config->rpc.port,
                   config->tiles.net.ip_addr );
