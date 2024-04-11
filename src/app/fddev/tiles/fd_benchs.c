@@ -202,10 +202,9 @@ before_frag( void * _ctx,
 
   fd_benchs_ctx_t * ctx = (fd_benchs_ctx_t *)_ctx;
 
-  if( FD_UNLIKELY( (seq%ctx->round_robin_cnt)!=ctx->round_robin_id ) ) {
-    *opt_filter = 1;
-    return;
-  }
+  *opt_filter = fd_int_if( (seq%ctx->round_robin_cnt)!=ctx->round_robin_id,
+                           1,
+                           *opt_filter );
 }
 
 static inline void
@@ -287,7 +286,7 @@ privileged_init( fd_topo_t *      topo,
     fd_quic_t * quic = fd_quic_join( fd_quic_new( quic_mem, &quic_limits ) );
 
     /* Signer */
-    uint     seed = 4242424242; 
+    uint     seed = 4242424242;
     fd_rng_t _rng[1];
     fd_rng_t * rng = fd_rng_join( fd_rng_new( _rng, seed, 0UL ) );
     ctx->signer_ctx = signer_ctx( rng );
