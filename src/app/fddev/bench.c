@@ -24,7 +24,7 @@
 #include "../../util/tile/fd_tile_private.h"
 
 // TODO replace with config
-#define quic_enabled 0
+#define quic_enabled 1
 
 void
 bench_cmd_perm( args_t *         args,

@@ -1014,7 +1014,7 @@ dynamic_port_range = "8900-9000"
         # are responsible for sending transactions to the validator, for
         # example by calling send() on a socket.  On loopback, a single
         # benchs tile can send around 320k packets a second.
-        benchs_tile_count = 2
+        benchs_tile_count = 1
 
         # Which cores to run the benchmarking tiles on.  By default the
         # cores will be floating but to get good performance

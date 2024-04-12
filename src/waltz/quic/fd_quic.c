@@ -210,10 +210,10 @@ fd_quic_limits_from_env( int  *   pargc,
 
   limits->conn_cnt         = fd_env_strip_cmdline_ulong( pargc, pargv, "--quic-conns",         "QUIC_CONN_CNT",        1024UL );
   limits->conn_id_cnt      = fd_env_strip_cmdline_ulong( pargc, pargv, "--quic-conn-ids",      "QUIC_CONN_ID_CNT",       16UL );
-  ulong stream_cnt         = fd_env_strip_cmdline_uint ( pargc, pargv, "--quic-streams",       "QUIC_STREAM_CNT",         2UL );
-  limits->handshake_cnt    = fd_env_strip_cmdline_uint ( pargc, pargv, "--quic-handshakes",    "QUIC_HANDSHAKE_CNT",    256UL );
-  limits->inflight_pkt_cnt = fd_env_strip_cmdline_ulong( pargc, pargv, "--quic-inflight-pkts", "QUIC_MAX_INFLIGHT_PKTS", 64UL );
-  limits->tx_buf_sz        = fd_env_strip_cmdline_ulong( pargc, pargv, "--quic-tx-buf-sz",     "QUIC_TX_BUF_SZ",    1UL<<15UL );
+  ulong stream_cnt         = fd_env_strip_cmdline_uint ( pargc, pargv, "--quic-streams",       "QUIC_STREAM_CNT",      2048UL );
+  limits->handshake_cnt    = fd_env_strip_cmdline_uint ( pargc, pargv, "--quic-handshakes",    "QUIC_HANDSHAKE_CNT",    1024UL );
+  limits->inflight_pkt_cnt = fd_env_strip_cmdline_ulong( pargc, pargv, "--quic-inflight-pkts", "QUIC_MAX_INFLIGHT_PKTS", 512UL );
+  limits->tx_buf_sz        = fd_env_strip_cmdline_ulong( pargc, pargv, "--quic-tx-buf-sz",     "QUIC_TX_BUF_SZ",    1UL<<12UL );
 
   limits->stream_cnt[ FD_QUIC_STREAM_TYPE_BIDI_CLIENT ] = 0UL;
   limits->stream_cnt[ FD_QUIC_STREAM_TYPE_BIDI_SERVER ] = 0UL;
@@ -255,6 +255,9 @@ fd_quic_config_from_env( int  *             pargc,
 
   cfg->idle_timeout = idle_timeout_ms * (ulong)1e6;
   cfg->initial_rx_max_stream_data = initial_rx_max_stream_data;
+
+  cfg->net.ephem_udp_port.lo = 10000;
+  cfg->net.ephem_udp_port.hi = 11000;
 
   return cfg;
 }
@@ -1254,6 +1257,7 @@ fd_quic_handle_v1_initial( fd_quic_t *               quic,
                            fd_quic_conn_id_t const * conn_id,
                            uchar const *             cur_ptr,
                            ulong                     cur_sz ) {
+  FD_LOG_WARNING(( "fd_quic_handle_v1_initial" ));
   fd_quic_conn_t * conn = *p_conn;
 
   fd_quic_state_t * state = fd_quic_get_state( quic );
@@ -1283,6 +1287,8 @@ fd_quic_handle_v1_initial( fd_quic_t *               quic,
   fd_quic_initial_t initial[1];
   ulong rc = fd_quic_decode_initial( initial, cur_ptr, cur_sz );
   if( FD_UNLIKELY( rc == FD_QUIC_PARSE_FAIL ) ) return FD_QUIC_PARSE_FAIL;
+
+  FD_LOG_WARNING(( "fd_quic_handle_v1_initial - decoded" ));
 
   /* check bounds on initial */
 
@@ -1414,6 +1420,7 @@ fd_quic_handle_v1_initial( fd_quic_t *               quic,
       /* Handle retry if configured. */
       if (quic->config.retry)
       {
+        FD_LOG_WARNING(( "fd_quic_handle_v1_initial - retry" ));
         fd_quic_metrics_t * metrics = &quic->metrics;
 
         /* This is the initial packet before retry. */
@@ -1603,6 +1610,7 @@ fd_quic_handle_v1_initial( fd_quic_t *               quic,
       /* As this is an INITIAL packet, change the status to DEAD, and allow
          it to be reaped */
       FD_DEBUG( FD_LOG_DEBUG(( "fd_quic_crypto_decrypt_hdr failed" )) );
+      FD_LOG_WARNING(( "fd_quic_handle_v1_initial - failed decrypt hdr" ));
       conn->state = FD_QUIC_CONN_STATE_DEAD;
       fd_quic_reschedule_conn( conn, 0 );
       quic->metrics.conn_aborted_cnt++;
@@ -1641,6 +1649,7 @@ fd_quic_handle_v1_initial( fd_quic_t *               quic,
                                   suite,
                                   &conn->keys[enc_level][!server] ) != FD_QUIC_SUCCESS ) ) {
       FD_DEBUG( FD_LOG_DEBUG(( "fd_quic_crypto_decrypt failed" )) );
+      FD_LOG_WARNING(( "fd_quic_handle_v1_initial - failed decrypt body" ));
       quic->metrics.conn_err_tls_fail_cnt++;
       return FD_QUIC_PARSE_FAIL;
     }
@@ -1651,6 +1660,8 @@ fd_quic_handle_v1_initial( fd_quic_t *               quic,
   if( FD_UNLIKELY( body_sz < pkt_number_sz + FD_QUIC_CRYPTO_TAG_SZ ) ) {
     return FD_QUIC_PARSE_FAIL;
   }
+
+  FD_LOG_WARNING(( "fd_quic_handle_v1_initial - successful decrypt" ));
 
   /* check if reply conn id needs to change */
   if( FD_UNLIKELY( !( conn->server | conn->established ) ) ) {
@@ -1712,6 +1723,7 @@ fd_quic_handle_v1_handshake(
     fd_quic_pkt_t *       pkt,
     uchar const *         cur_ptr,
     ulong                 cur_sz ) {
+  FD_LOG_WARNING(( "fd_quic_handle_v1_handshake" ));
 
   fd_quic_state_t * state = fd_quic_get_state( quic );
 
@@ -1850,6 +1862,7 @@ fd_quic_handle_v1_handshake(
       quic->metrics.conn_err_tls_fail_cnt++;
       return FD_QUIC_PARSE_FAIL;
     }
+    FD_LOG_WARNING(( "fd_quic_handle_v1_handshake - decrypt success" ));
 #ifdef FD_QUIC_TEST_INSECURE
   }
 #endif
@@ -2705,6 +2718,7 @@ fd_quic_process_packet( fd_quic_t *   quic,
   /* parse eth, ip, udp */
   rc = fd_quic_decode_eth( pkt.eth, cur_ptr, cur_sz );
   if( FD_UNLIKELY( rc == FD_QUIC_PARSE_FAIL ) ) {
+    FD_LOG_WARNING(( "failed" ));
     /* TODO count failure, log-debug failure */
     return;
   }
@@ -2712,6 +2726,7 @@ fd_quic_process_packet( fd_quic_t *   quic,
   /* TODO support for vlan? */
 
   if( FD_UNLIKELY( pkt.eth->net_type != FD_ETH_HDR_TYPE_IP ) ) {
+    FD_LOG_WARNING(( "failed" ));
     FD_DEBUG( FD_LOG_DEBUG(( "Invalid ethertype: %4.4x", pkt.eth->net_type )) );
     return;
   }
@@ -2722,12 +2737,14 @@ fd_quic_process_packet( fd_quic_t *   quic,
 
   rc = fd_quic_decode_ip4( pkt.ip4, cur_ptr, cur_sz );
   if( FD_UNLIKELY( rc == FD_QUIC_PARSE_FAIL ) ) {
+    FD_LOG_WARNING(( "failed" ));
     /* TODO count failure, log-debug failure */
     return;
   }
 
   /* check version, tot_len, protocol, checksum? */
   if( FD_UNLIKELY( pkt.ip4->protocol != FD_IP4_HDR_PROTOCOL_UDP ) ) {
+    FD_LOG_WARNING(( "failed" ));
     return;
   }
 
@@ -2737,6 +2754,7 @@ fd_quic_process_packet( fd_quic_t *   quic,
 
   rc = fd_quic_decode_udp( pkt.udp, cur_ptr, cur_sz );
   if( FD_UNLIKELY( rc == FD_QUIC_PARSE_FAIL ) ) {
+    FD_LOG_WARNING(( "failed" ));
     /* TODO count failure, log-debug failure */
     return;
   }
@@ -2761,6 +2779,7 @@ fd_quic_process_packet( fd_quic_t *   quic,
 
   /* shortest valid quic payload? */
   if( FD_UNLIKELY( cur_sz < FD_QUIC_SHORTEST_PKT ) ) {
+    FD_LOG_WARNING(( "failed" ));
     return;
   }
 
@@ -3291,6 +3310,7 @@ fd_quic_service( fd_quic_t * quic ) {
     if( FD_UNLIKELY( now > conn->last_activity + ( conn->idle_timeout / 2 ) ) ) {
       if( FD_UNLIKELY( now > conn->last_activity + conn->idle_timeout ) ) {
         if( FD_LIKELY( conn->state != FD_QUIC_CONN_STATE_DEAD ) ) {
+          FD_LOG_WARNING(( "fd_quic_handle_v1_initial - idle timeout" ));
           /* rfc9000 10.1 Idle Timeout
              "... the connection is silently closed and its state is discarded
              when it remains idle for longer than the minimum of the

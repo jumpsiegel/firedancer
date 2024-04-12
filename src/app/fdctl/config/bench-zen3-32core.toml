@@ -18,8 +18,8 @@
   fund_initial_accounts = 8192
 
 [development.bench]
-  benchg_tile_count = 12
-  affinity = "f1,0-5,32-37,6"
+  benchg_tile_count = 4
+  affinity = "f2,0-5,32-37,6"
   larger_max_cost_per_block = true
   larger_shred_limits_per_block = true
   

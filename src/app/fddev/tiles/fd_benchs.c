@@ -14,7 +14,7 @@
 
 
 // TODO replace with config
-#define quic_enabled 0
+#define quic_enabled 1
 
 /* max number of buffers batched for receive */
 #define IO_VEC_CNT 16
@@ -27,6 +27,15 @@ quic_conn_new( fd_quic_conn_t * conn,
                void *           _ctx ) {
   (void)conn;
   (void)_ctx;
+}
+
+
+void
+handshake_complete( fd_quic_conn_t * conn,
+                       void *           vp_context ) {
+  (void)conn;
+  (void)vp_context;
+  FD_LOG_WARNING(( "client handshake complete" ));
 }
 
 
@@ -84,6 +93,9 @@ static void
 conn_final( fd_quic_conn_t * conn,
             void *           context ) {
   (void)context;
+
+  // TODO don't we get a close code?
+  FD_LOG_WARNING(( "Connection closed" ));
 
   fd_quic_conn_t ** ppconn =
     (fd_quic_conn_t**)fd_quic_conn_get_context( conn );
@@ -150,6 +162,7 @@ typedef struct {
 
   signer_ctx_t     signer_ctx;
   fd_quic_t *      quic;
+  ushort           quic_port;
   fd_quic_conn_t * quic_conn;
   const fd_aio_t * quic_rx_aio;
   ulong            no_stream;
@@ -167,6 +180,30 @@ scratch_align( void ) {
   return alignof( fd_benchs_ctx_t );
 }
 
+void
+populate_quic_limits( fd_quic_limits_t * limits ) {
+  int    argc = 0;
+  char * args[] = { NULL };
+  char ** argv = args;
+  fd_quic_limits_from_env( &argc, &argv, limits );
+  limits->stream_cnt[0] = 0;
+  limits->stream_cnt[1] = 0;
+  limits->stream_cnt[2] = 512;
+  limits->stream_cnt[3] = 0;
+  limits->initial_stream_cnt[0] = 0;
+  limits->initial_stream_cnt[1] = 0;
+  limits->initial_stream_cnt[2] = 512;
+  limits->initial_stream_cnt[3] = 0;
+}
+
+void
+populate_quic_config( fd_quic_config_t * config ) {
+  int    argc = 0;
+  char * args[] = { NULL };
+  char ** argv = args;
+  fd_quic_config_from_env( &argc, &argv, config );
+}
+
 FD_FN_PURE static inline ulong
 scratch_footprint( fd_topo_tile_t const * tile ) {
   (void)tile;
@@ -174,16 +211,13 @@ scratch_footprint( fd_topo_tile_t const * tile ) {
   l = FD_LAYOUT_APPEND( l, alignof( fd_benchs_ctx_t ), sizeof( fd_benchs_ctx_t ) );
   if( quic_enabled ) {
     fd_quic_limits_t quic_limits = {0};
-    int    argc = 0;
-    char * args[] = { NULL };
-    char ** argv = args;
-    fd_quic_limits_from_env( &argc, &argv, &quic_limits );
-    //l = FD_LAYOUT_APPEND( l, fd_aio_align(),           fd_aio_footprint()           );
+    populate_quic_limits( &quic_limits );
     ulong quic_fp = fd_quic_footprint( &quic_limits );
     l = FD_LAYOUT_APPEND( l, fd_quic_align(),          quic_fp );
-    FD_LOG_WARNING(( "QUIC - footprint: %lu", quic_fp ));
+    FD_LOG_WARNING(( "QUIC - footprint: %lx", quic_fp ));
+    l = FD_LAYOUT_APPEND( l, fd_aio_align(),           fd_aio_footprint() );
   }
-  return FD_LAYOUT_FINI( l, scratch_align() );
+  return FD_LAYOUT_FINI( l, scratch_align() ) + (1<<20);
 }
 
 FD_FN_CONST static inline void *
@@ -233,17 +267,24 @@ during_frag( void * _ctx,
     if( FD_UNLIKELY( !ctx->quic_conn ) ) {
       /* try to connect */
       uint   dest_ip   = 0;
-      ushort dest_port = 0;
+      ushort dest_port = fd_ushort_bswap( ctx->quic_port );
       ctx->quic_conn = fd_quic_connect( ctx->quic, dest_ip, dest_port, "client" );
 
       /* failed? try later */
-      if( FD_UNLIKELY( !ctx->quic_conn ) ) return;
+      if( FD_UNLIKELY( !ctx->quic_conn ) ) {
+        FD_LOG_WARNING(( "NO CONN" ));
+        return;
+      }
+
+      FD_LOG_WARNING(( "connection created on port %d", (int)dest_port ));
 
       /* set the context to point to the location
          of the quic_conn pointer
          this allows the notification to NULL the value when
          a connection dies */
       fd_quic_conn_set_context( ctx->quic_conn, &ctx->quic_conn );
+
+      return;
     }
 
     // TODO switch this logic
@@ -274,16 +315,23 @@ privileged_init( fd_topo_t *      topo,
   FD_SCRATCH_ALLOC_INIT( l, scratch );
   fd_benchs_ctx_t * ctx = FD_SCRATCH_ALLOC_APPEND( l, alignof( fd_benchs_ctx_t ), sizeof( fd_benchs_ctx_t ) );
 
+  FD_LOG_WARNING(( "ctx ofs: %lx", (ulong)ctx - (ulong)scratch ));
+
+  void*quic_mem = NULL; (void)quic_mem;
+  void*aio_mem  = NULL; (void)aio_mem;
+
   if( quic_enabled ) {
     fd_quic_limits_t quic_limits = {0};
-    int    argc = 0;
-    char * args[] = { NULL };
-    char ** argv = args;
-    fd_quic_limits_from_env( &argc, &argv, &quic_limits );
+    populate_quic_limits( &quic_limits );
     ulong quic_fp = fd_quic_footprint( &quic_limits );
-    FD_LOG_WARNING(( "QUIC - footprint: %lu", quic_fp ));
-    void * quic_mem  = FD_SCRATCH_ALLOC_APPEND( l, fd_quic_align(), quic_fp );
+    FD_LOG_WARNING(( "QUIC - footprint: %lx", quic_fp ));
+    quic_mem = FD_SCRATCH_ALLOC_APPEND( l, fd_quic_align(), quic_fp );
     fd_quic_t * quic = fd_quic_join( fd_quic_new( quic_mem, &quic_limits ) );
+
+    populate_quic_config( &quic->config );
+
+    // TODO remove:
+    aio_mem = FD_SCRATCH_ALLOC_APPEND( l, fd_aio_align(), fd_aio_footprint() );
 
     /* Signer */
     uint     seed = 4242424242;
@@ -310,6 +358,7 @@ privileged_init( fd_topo_t *      topo,
   ctx->conn_cnt = fd_topo_tile_name_cnt( topo, "quic" );
   if( quic_enabled ) ctx->conn_cnt = 1;
   FD_TEST( ctx->conn_cnt <=sizeof(ctx->conn_fd)/sizeof(*ctx->conn_fd) );
+  ctx->quic_port = tile->benchs.send_to_port;
   for( ulong i=0UL; i<ctx->conn_cnt ; i++ ) {
     int conn_fd = socket( AF_INET, SOCK_DGRAM, 0 );
     if( FD_UNLIKELY( -1==conn_fd ) ) FD_LOG_ERR(( "socket() failed (%i-%s)", errno, fd_io_strerror( errno ) ));
@@ -344,6 +393,14 @@ privileged_init( fd_topo_t *      topo,
     }
     port++;
   }
+
+  ulong scratch_top = FD_SCRATCH_ALLOC_FINI( l, 1UL );
+
+  FD_LOG_WARNING(( "ctx ofs: %lx  quic ofs: %lx  aio ofs: %lx  top: %lx",
+        (ulong)ctx - (ulong)scratch,
+        (ulong)quic_mem - (ulong)scratch,
+        (ulong)aio_mem - (ulong)scratch,
+        (ulong)scratch_top - (ulong)scratch ));
 }
 
 static void
@@ -353,6 +410,8 @@ unprivileged_init( fd_topo_t *      topo,
   FD_SCRATCH_ALLOC_INIT( l, scratch );
   fd_benchs_ctx_t * ctx = FD_SCRATCH_ALLOC_APPEND( l, alignof( fd_benchs_ctx_t ), sizeof( fd_benchs_ctx_t ) );
 
+  FD_LOG_WARNING(( "ctx ofs: %lx", (ulong)ctx - (ulong)scratch ));
+
   ctx->packet_cnt = 0UL;
 
   ctx->round_robin_id = tile->kind_id;
@@ -360,13 +419,19 @@ unprivileged_init( fd_topo_t *      topo,
 
   ctx->mem = topo->workspaces[ topo->objs[ topo->links[ tile->in_link_id[ 0UL ] ].dcache_obj_id ].wksp_id ].wksp;
 
-  ulong scratch_top = FD_SCRATCH_ALLOC_FINI( l, 1UL );
-  if( FD_UNLIKELY( scratch_top > (ulong)scratch + scratch_footprint( tile ) ) )
-    FD_LOG_ERR(( "scratch overflow %lu %lu %lu", scratch_top - (ulong)scratch - scratch_footprint( tile ), scratch_top, (ulong)scratch + scratch_footprint( tile ) ));
+  void * quic_mem = NULL; (void)quic_mem;
+  void * aio_mem  = NULL; (void)aio_mem;
 
-  fd_quic_t * quic = ctx->quic;
-  if( quic ) {
-    fd_aio_t * quic_tx_aio = fd_aio_join( fd_aio_new( FD_SCRATCH_ALLOC_APPEND( l, fd_aio_align(), fd_aio_footprint() ), ctx, quic_tx_aio_send ) );
+  if( quic_enabled ) {
+    fd_quic_limits_t quic_limits = {0};
+    populate_quic_limits( &quic_limits );
+    ulong quic_fp = fd_quic_footprint( &quic_limits );
+    FD_LOG_WARNING(( "QUIC - footprint: %lx", quic_fp ));
+    quic_mem = FD_SCRATCH_ALLOC_APPEND( l, fd_quic_align(), quic_fp );
+
+    fd_quic_t * quic = ctx->quic;
+    aio_mem = FD_SCRATCH_ALLOC_APPEND( l, fd_aio_align(), fd_aio_footprint() );
+    fd_aio_t * quic_tx_aio = fd_aio_join( fd_aio_new( aio_mem, ctx, quic_tx_aio_send ) );
 
     if( FD_UNLIKELY( !quic_tx_aio ) ) FD_LOG_ERR(( "fd_aio_join failed" ));
 
@@ -382,7 +447,7 @@ unprivileged_init( fd_topo_t *      topo,
     fd_memcpy( quic->config.link.src_mac_addr, quic_src_mac_addr, 6 );
 
     quic->cb.conn_new         = quic_conn_new;
-    quic->cb.conn_hs_complete = NULL;
+    quic->cb.conn_hs_complete = handshake_complete;
     quic->cb.conn_final       = conn_final;
     quic->cb.stream_new       = quic_stream_new;
     quic->cb.stream_receive   = quic_stream_receive;
@@ -394,13 +459,25 @@ unprivileged_init( fd_topo_t *      topo,
     fd_quic_set_aio_net_tx( quic, quic_tx_aio );
     if( FD_UNLIKELY( !fd_quic_init( quic ) ) ) FD_LOG_ERR(( "fd_quic_init failed" ));
 
+    ulong hdr_sz = 14 + 20 + 8;
     for( ulong i = 0; i < IO_VEC_CNT; i++ ) {
-      ctx->iovecs[i].iov_base         = ctx->rx_bufs[i];
-      ctx->iovecs[i].iov_len          = sizeof(ctx->rx_bufs[i]);
+      /* leave space for headers */
+      ctx->iovecs[i].iov_base         = ctx->rx_bufs[i]         + hdr_sz;
+      ctx->iovecs[i].iov_len          = sizeof(ctx->rx_bufs[i]) - hdr_sz;
       ctx->msgs[i].msg_hdr.msg_iov    = &ctx->iovecs[i];
       ctx->msgs[i].msg_hdr.msg_iovlen = 1;
     }
   }
+
+  ulong scratch_top = FD_SCRATCH_ALLOC_FINI( l, 1UL );
+  if( FD_UNLIKELY( scratch_top > (ulong)scratch + scratch_footprint( tile ) ) )
+    FD_LOG_ERR(( "scratch overflow %lu %lu %lu", scratch_top - (ulong)scratch - scratch_footprint( tile ), scratch_top, (ulong)scratch + scratch_footprint( tile ) ));
+
+  FD_LOG_WARNING(( "ctx ofs: %lx  quic ofs: %lx  aio ofs: %lx  top: %lx",
+        (ulong)ctx - (ulong)scratch,
+        (ulong)quic_mem - (ulong)scratch,
+        (ulong)aio_mem - (ulong)scratch,
+        (ulong)scratch_top - (ulong)scratch ));
 
 }
 
@@ -421,14 +498,23 @@ quic_tx_aio_send( void *                    _ctx,
   if( FD_LIKELY( quic_enabled ) ) {
     // TODO consider using sendmmsg batches
     for( ulong j = 0UL; j < batch_cnt; ++j ) {
-      if( FD_UNLIKELY( send( ctx->conn_fd[ ctx->packet_cnt % ctx->conn_cnt ],
-                             batch[j].buf,
-                             batch[j].buf_sz,
+      /* quic adds eth, ip and udp headers which we don't need */
+      /* assume 14 + 20 + 8 for those */
+      ulong hdr_sz = 14+20+8;
+      if( FD_UNLIKELY( batch[j].buf_sz <= hdr_sz ) ) continue;
+
+      uchar * payload    = (uchar*)batch[j].buf + hdr_sz;
+      ulong   payload_sz = batch[j].buf_sz      - hdr_sz;
+      if( FD_UNLIKELY( send( ctx->conn_fd[0],
+                             payload,
+                             payload_sz,
                              0 ) ) == -1 ) {
         FD_LOG_ERR(( "send failed with error: %d %s", errno, strerror( errno ) ));
       }
     }
   }
+
+  if( FD_LIKELY( opt_batch_idx ) ) *opt_batch_idx = batch_cnt;
 
   return 0;
 }
@@ -456,15 +542,42 @@ before_credit( void * _ctx,
       int revents = ctx->poll_fd[j].revents;
       if( FD_LIKELY( revents & POLLIN ) ) {
         /* data available - receive up to IO_VEC_CNT buffers */
-        int retval = recvmmsg( ctx->poll_fd[j].fd, ctx->msgs, IO_VEC_CNT, 0, NULL );
+        struct timespec timeout = {0};
+        int retval = recvmmsg( ctx->poll_fd[j].fd, ctx->msgs, IO_VEC_CNT, 0, &timeout );
         if( FD_UNLIKELY( retval < 0 ) ) {
           FD_LOG_ERR(( "Error occurred on recvmmsg: %d %s", errno, strerror( errno ) ));
         } else {
           /* pass buffers to QUIC */
           fd_aio_pkt_info_t pkt[IO_VEC_CNT];
+          ulong hdr_sz = 14 + 20 + 8;
           for( ulong j = 0; j < (ulong)retval; ++j ) {
             pkt[j].buf    = ctx->rx_bufs[j];
-            pkt[j].buf_sz = (ushort)ctx->msgs[j].msg_len;
+            pkt[j].buf_sz = (ushort)( ctx->msgs[j].msg_len + hdr_sz );
+
+            /* set some required values */
+            uint payload_len = ctx->msgs[j].msg_len;
+            uint udp_len     = payload_len + 8;
+            uint ip_len      = udp_len + 20;
+
+            uchar * buf = (uchar*)pkt[j].buf;
+
+            /* set ethtype */
+            buf[12 + 0] = 0x08;
+            buf[12 + 1] = 0x00;
+
+            /* set ver and len */
+            buf[14] = 0x45;
+
+            /* set protocol */
+            buf[14 + 9] = 17;
+
+            /* set udp length */
+            buf[14 + 20 + 4] = (uchar)( udp_len >> 8 );
+            buf[14 + 20 + 5] = (uchar)( udp_len      );
+
+            /* set ip length */
+            buf[14 + 2] = (uchar)( ip_len >> 8 );
+            buf[14 + 3] = (uchar)( ip_len      );
           }
           fd_aio_send( ctx->quic_rx_aio, pkt, (ulong)retval, NULL, 1 );
         }
