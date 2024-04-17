@@ -1,7 +1,8 @@
 #include "fd_sysvar_rent.h"
+#include "fd_sysvar.h"
 #include "../fd_acc_mgr.h"
 #include "../fd_system_ids.h"
-#include "../fd_executor.h"
+#include "../context/fd_exec_epoch_ctx.h"
 #include <assert.h>
 
 /* https://github.com/solana-labs/solana/blob/8f2c8b8388a495d2728909e30460aa40dcc5d733/sdk/program/src/rent.rs#L36 */
@@ -33,6 +34,32 @@ fd_sysvar_rent_read( fd_rent_t *          result,
   return result;
 }
 
+static void
+write_rent( fd_exec_slot_ctx_t * slot_ctx,
+            fd_rent_t const * rent ) {
+
+  uchar enc[ 32 ];
+
+  ulong sz = fd_rent_size( rent );
+  FD_TEST( sz<=sizeof(enc) );
+  memset( enc, 0, sz );
+
+  fd_bincode_encode_ctx_t ctx;
+  ctx.data    = enc;
+  ctx.dataend = enc + sz;
+  if( fd_rent_encode( rent, &ctx ) )
+    FD_LOG_ERR(("fd_rent_encode failed"));
+
+  fd_sysvar_set( slot_ctx, fd_sysvar_owner_id.key, &fd_sysvar_rent_id, enc, sz, slot_ctx->slot_bank.slot, NULL );
+}
+
+void
+fd_sysvar_rent_init( fd_exec_slot_ctx_t * slot_ctx ) {
+  write_rent( slot_ctx, &slot_ctx->epoch_ctx->epoch_bank.rent );
+}
+
+/* TODO: handle update */
+
 ulong
 fd_rent_exempt_minimum_balance2( fd_rent_t const * rent,
                                  ulong             data_len ) {
@@ -40,15 +67,13 @@ fd_rent_exempt_minimum_balance2( fd_rent_t const * rent,
   return (ulong)( (double)((data_len + ACCOUNT_STORAGE_OVERHEAD) * rent->lamports_per_uint8_year) * (double)rent->exemption_threshold );
 }
 
-int
+ulong
 fd_rent_exempt_minimum_balance( fd_exec_slot_ctx_t * slot_ctx,
-                                ulong                data_len,
-                                ulong *              out ) {
+                                ulong                data_len ) {
   /* TODO wire up with sysvar cache */
   fd_rent_t rent;
   fd_rent_new( &rent );
   fd_rent_t * result = fd_sysvar_rent_read( &rent, slot_ctx );
-  if( FD_UNLIKELY( !result ) ) return FD_EXECUTOR_INSTR_ERR_UNSUPPORTED_SYSVAR;
-  *out = fd_rent_exempt_minimum_balance2( &rent, data_len );
-  return 0UL;
+  assert( result );
+  return fd_rent_exempt_minimum_balance2( &rent, data_len );
 }
