@@ -517,7 +517,7 @@ install () {
   ( install_snappy    )
   ( install_rocksdb   )
   ( install_openssl   )
-  ( install_libmicrohttpd )
+#  ( install_libmicrohttpd )
   ( install_libff     )
 
   # Remove cmake and pkgconfig files, so we don't accidentally
