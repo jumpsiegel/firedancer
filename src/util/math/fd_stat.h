@@ -282,4 +282,3 @@ fd_stat_robust_exp_fit_double( double *       opt_x0,
 FD_PROTOTYPES_END
 
 #endif /* HEADER_fd_src_util_math_fd_stat_h */
-
