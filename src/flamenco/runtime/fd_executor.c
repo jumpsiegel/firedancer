@@ -108,9 +108,9 @@ fd_executor_setup_accessed_accounts_for_txn( fd_exec_txn_ctx_t * txn_ctx ) {
     ulong readonly_lut_accs_cnt = 0;
 
     // Set up accounts in the account look up tables.
-    const fd_txn_acct_addr_lut_t * addr_luts = fd_txn_get_address_tables_const( txn_ctx->txn_descriptor );
+    fd_txn_acct_addr_lut_t * addr_luts = fd_txn_get_address_tables( txn_ctx->txn_descriptor );
     for( ulong i = 0; i < txn_ctx->txn_descriptor->addr_table_lookup_cnt; i++ ) {
-      const fd_txn_acct_addr_lut_t * addr_lut = &addr_luts[i];
+      fd_txn_acct_addr_lut_t * addr_lut = &addr_luts[i];
       fd_pubkey_t const * addr_lut_acc = (fd_pubkey_t *)((uchar *)txn_ctx->_txn_raw->raw + addr_lut->addr_off);
 
       FD_BORROWED_ACCOUNT_DECL(addr_lut_rec);
@@ -416,7 +416,7 @@ fd_execute_txn_prepare_phase1( fd_exec_slot_ctx_t *  slot_ctx,
   if( compute_budget_status != 0 ) {
     return -1;
   }
-
+  
 #ifdef VLOG
   fd_txn_t const *txn = txn_ctx->txn_descriptor;
   fd_rawtxn_b_t const *raw_txn = txn_ctx->_txn_raw;
@@ -485,8 +485,9 @@ fd_execute_txn_prepare_phase4( fd_exec_slot_ctx_t * slot_ctx,
         Also iterate over LUT accounts */
   if( FD_FEATURE_ACTIVE( slot_ctx, set_exempt_rent_epoch_max ) ) {
     fd_pubkey_t * tx_accs   = (fd_pubkey_t *)((uchar *)txn_ctx->_txn_raw->raw + txn_ctx->txn_descriptor->acct_addr_off);
-    for( ulong i = fd_txn_acct_iter_init( txn_ctx->txn_descriptor, FD_TXN_ACCT_CAT_WRITABLE );
-          i < fd_txn_acct_iter_end(); i=fd_txn_acct_iter_next( i ) ) {
+    fd_txn_acct_iter_t ctrl;
+    for( ulong i = fd_txn_acct_iter_init( txn_ctx->txn_descriptor, FD_TXN_ACCT_CAT_WRITABLE, &ctrl );
+          i < fd_txn_acct_iter_end(); i=fd_txn_acct_iter_next( i, &ctrl ) ) {
       if( (i == 0) || fd_pubkey_is_sysvar_id( &tx_accs[i] ) )
         continue;
       fd_set_exempt_rent_epoch_max( txn_ctx, &tx_accs[i] );
@@ -592,7 +593,7 @@ fd_execute_txn( fd_exec_txn_ctx_t * txn_ctx ) {
 
     for ( ushort i = 0; i < txn_ctx->txn_descriptor->instr_cnt; i++ ) {
   #ifdef VLOG
-        if ( FD_UNLIKELY( 250555489 == txn_ctx->slot_ctx->slot_bank.slot ) )
+        if ( FD_UNLIKELY( 250555489 == txn_ctx->slot_ctx->slot_bank.slot ) ) 
           FD_LOG_WARNING(("Start of transaction for %d for %64J", i, sig));
   #endif
       if ( FD_UNLIKELY( use_sysvar_instructions ) ) {
@@ -658,7 +659,7 @@ fd_execute_txn( fd_exec_txn_ctx_t * txn_ctx ) {
       /* An account writable iff it is writable AND it is not being demoted.
          If this criteria is not met, the account should not be marked as touched
          via updating its most recent slot. */
-      int is_writable = fd_txn_account_is_writable_idx(txn_ctx->txn_descriptor, txn_ctx->accounts, (int)i) &&
+      int is_writable = fd_txn_account_is_writable_idx(txn_ctx->txn_descriptor, txn_ctx->accounts, (int)i) && 
                         !fd_txn_account_is_demotion( txn_ctx, (int)i );
       if( !is_writable ) {
         continue;
