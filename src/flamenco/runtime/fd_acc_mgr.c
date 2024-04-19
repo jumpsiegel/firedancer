@@ -3,6 +3,7 @@
 #include "context/fd_exec_epoch_ctx.h"
 #include "context/fd_exec_slot_ctx.h"
 #include "fd_rent_lists.h"
+#include "fd_rocksdb.h"
 #include "sysvar/fd_sysvar_rent.h"
 #include <assert.h>
 
@@ -60,7 +61,7 @@ fd_rent_lists_cb( fd_funk_rec_t * rec,
       void const * data = fd_funk_val( rec, fd_funk_wksp(acc_mgr->funk) );
       fd_account_meta_t const * metadata = fd_type_pun_const( data );
 
-      ulong required_balance = fd_rent_exempt_minimum_balance2( &slot_ctx->epoch_ctx->epoch_bank.rent, metadata->dlen );
+      ulong required_balance = fd_rent_exempt_minimum_balance2( &slot_ctx->epoch_ctx->epoch_bank.rent, metadata->dlen);
       if( required_balance <= metadata->info.lamports )
         return FD_FUNK_PART_NULL;
     }
@@ -74,7 +75,6 @@ fd_rent_lists_cb( fd_funk_rec_t * rec,
 void
 fd_acc_mgr_set_slots_per_epoch( fd_exec_slot_ctx_t * slot_ctx,
                                 ulong                slots_per_epoch ) {
-
   fd_acc_mgr_t * acc_mgr = slot_ctx->acc_mgr;
 
   /* Handle feature activation of 'skip_rent_rewrites' or change of
@@ -86,8 +86,9 @@ fd_acc_mgr_set_slots_per_epoch( fd_exec_slot_ctx_t * slot_ctx,
       ( skip_rent_rewrites == acc_mgr->skip_rent_rewrites ) )
     return;
 
-  acc_mgr->slots_per_epoch = slots_per_epoch;
-  acc_mgr->part_width      = fd_rent_partition_width( slots_per_epoch );
+  acc_mgr->slots_per_epoch    = slots_per_epoch;
+  acc_mgr->skip_rent_rewrites = !!skip_rent_rewrites;
+  acc_mgr->part_width         = fd_rent_partition_width( slots_per_epoch );
 
   fd_funk_repartition( acc_mgr->funk, (uint)slots_per_epoch, fd_rent_lists_cb, slot_ctx );
 }
@@ -155,38 +156,6 @@ fd_acc_mgr_view( fd_acc_mgr_t *          acc_mgr,
   return FD_ACC_MGR_SUCCESS;
 }
 
-int
-fd_acc_mgr_modify( fd_acc_mgr_t *          acc_mgr,
-                   fd_funk_txn_t *         txn,
-                   fd_pubkey_t const *     pubkey,
-                   int                     do_create,
-                   ulong                   min_data_sz,
-                   fd_borrowed_account_t * account ) {
-  int err = FD_ACC_MGR_SUCCESS;
-
-  fd_account_meta_t * meta = fd_acc_mgr_modify_raw( acc_mgr, txn, pubkey, do_create, min_data_sz, account->const_rec, &account->rec, &err );
-  if( FD_UNLIKELY( !meta ) ) return err;
-
-  assert( account->magic == FD_BORROWED_ACCOUNT_MAGIC );
-
-  fd_memcpy(account->pubkey, pubkey, sizeof(fd_pubkey_t));
-
-  if( FD_UNLIKELY( meta->magic != FD_ACCOUNT_META_MAGIC ) )
-    return FD_ACC_MGR_ERR_WRONG_MAGIC;
-
-  account->orig_rec  = account->const_rec  = account->rec;
-  account->orig_meta = account->const_meta = account->meta = meta;
-  account->orig_data = account->const_data = account->data = (uchar *)meta + meta->hlen;
-
-  if( ULONG_MAX == account->starting_dlen )
-    account->starting_dlen = meta->dlen;
-
-  if( ULONG_MAX == account->starting_lamports )
-    account->starting_lamports = meta->info.lamports;
-
-  return FD_ACC_MGR_SUCCESS;
-}
-
 fd_account_meta_t *
 fd_acc_mgr_modify_raw( fd_acc_mgr_t *        acc_mgr,
                        fd_funk_txn_t *       txn,
@@ -198,7 +167,27 @@ fd_acc_mgr_modify_raw( fd_acc_mgr_t *        acc_mgr,
                        int *                 opt_err ) {
 
   fd_funk_t *       funk = acc_mgr->funk;
+
   fd_funk_rec_key_t id   = fd_acc_funk_key( pubkey );
+
+  if (((pubkey->ul[0] == 0) & (pubkey->ul[1] == 0) & (pubkey->ul[2] == 0) & (pubkey->ul[3] == 0)))
+    FD_LOG_WARNING(( "null pubkey (system program?) is being modified" ));
+
+#ifdef VLOG
+  ulong rec_cnt = 0;
+  for( fd_funk_rec_t const * rec = fd_funk_txn_first_rec( funk, txn );
+       NULL != rec;
+       rec = fd_funk_txn_next_rec( funk, rec ) ) {
+
+    if( !fd_funk_key_is_acc( rec->pair.key  ) ) continue;
+
+    FD_LOG_DEBUG(( "fd_acc_mgr_modify_raw: %32J create: %s  rec_cnt: %d", rec->pair.key->uc, do_create ? "true" : "false", rec_cnt));
+
+    rec_cnt++;
+  }
+
+  FD_LOG_DEBUG(( "fd_acc_mgr_modify_raw: %32J create: %s", pubkey->uc, do_create ? "true" : "false"));
+#endif
 
   int funk_err = FD_FUNK_SUCCESS;
   fd_funk_rec_t * rec = fd_funk_rec_write_prepare( funk, txn, &id, sizeof(fd_account_meta_t)+min_data_sz, do_create, opt_con_rec, &funk_err );
@@ -209,7 +198,7 @@ fd_acc_mgr_modify_raw( fd_acc_mgr_t *        acc_mgr,
       return NULL;
     }
     /* Irrecoverable funky internal error [[noreturn]] */
-    FD_LOG_ERR(( "fd_funk_rec_write_prepare failed (%i-%s)", funk_err, fd_funk_strerror( funk_err ) ));
+    FD_LOG_ERR(( "fd_funk_rec_write_prepare(%32J) failed (%i-%s)", pubkey->key, funk_err, fd_funk_strerror( funk_err ) ));
   }
 
   if (NULL != opt_out_rec)
@@ -220,7 +209,7 @@ fd_acc_mgr_modify_raw( fd_acc_mgr_t *        acc_mgr,
   if ( acc_mgr->slots_per_epoch != 0 )
     fd_funk_part_set(funk, rec, (uint)fd_rent_lists_key_to_bucket( acc_mgr, rec ));
 
-  fd_account_meta_t * ret = fd_funk_val( rec, fd_funk_wksp(funk) );
+  fd_account_meta_t * ret = fd_funk_val( rec, fd_funk_wksp( funk ) );
 
   if( do_create && ret->magic == 0 )
     fd_account_meta_init(ret);
@@ -254,10 +243,10 @@ fd_acc_mgr_modify_raw_prealloc( fd_acc_mgr_t *        acc_mgr,
       return NULL;
     }
     /* Irrecoverable funky internal error [[noreturn]] */
-    FD_LOG_ERR(( "fd_funk_rec_write_prepare_prealloc failed (%i-%s)", funk_err, fd_funk_strerror( funk_err ) ));
+    FD_LOG_ERR(( "fd_funk_rec_write_prepare_prealloc(%32J) failed (%i-%s)", pubkey->key, funk_err, fd_funk_strerror( funk_err ) ));
   }
 
-  if( NULL != opt_out_rec )
+  if (NULL != opt_out_rec)
     *opt_out_rec = rec;
 
   // At this point, we don't know if the record WILL be rent exempt so
@@ -275,6 +264,43 @@ fd_acc_mgr_modify_raw_prealloc( fd_acc_mgr_t *        acc_mgr,
   }
 
   return ret;
+}
+
+int
+fd_acc_mgr_modify( fd_acc_mgr_t *          acc_mgr,
+                   fd_funk_txn_t *         txn,
+                   fd_pubkey_t const *     pubkey,
+                   int                     do_create,
+                   ulong                   min_data_sz,
+                   fd_borrowed_account_t * account ) {
+  int err = FD_ACC_MGR_SUCCESS;
+
+  fd_account_meta_t * meta = fd_acc_mgr_modify_raw( acc_mgr, txn, pubkey, do_create, min_data_sz, account->const_rec, &account->rec, &err );
+  if( FD_UNLIKELY( !meta ) ) return err;
+
+  assert( account->magic == FD_BORROWED_ACCOUNT_MAGIC );
+
+  fd_memcpy(account->pubkey, pubkey, sizeof(fd_pubkey_t));
+
+  if( FD_UNLIKELY( meta->magic != FD_ACCOUNT_META_MAGIC ) )
+    return FD_ACC_MGR_ERR_WRONG_MAGIC;
+
+#ifdef VLOG
+  FD_LOG_DEBUG(( "fd_acc_mgr_modify: %32J create: %s  lamports: %ld  owner: %32J  executable: %s,  rent_epoch: %ld, data_len: %ld",
+      pubkey->uc, do_create ? "true" : "false", meta->info.lamports, meta->info.owner, meta->info.executable ? "true" : "false", meta->info.rent_epoch, meta->dlen ));
+#endif
+
+  account->orig_rec  = account->const_rec  = account->rec;
+  account->orig_meta = account->const_meta = account->meta = meta;
+  account->orig_data = account->const_data = account->data = (uchar *)meta + meta->hlen;
+
+  if( ULONG_MAX == account->starting_dlen )
+    account->starting_dlen = meta->dlen;
+
+  if( ULONG_MAX == account->starting_lamports )
+    account->starting_lamports = meta->info.lamports;
+
+  return FD_ACC_MGR_SUCCESS;
 }
 
 FD_FN_CONST char const *
@@ -305,6 +331,7 @@ fd_acc_mgr_save_prealloc( fd_acc_mgr_t *          acc_mgr,
 
   if( account->meta == NULL ) {
     // The meta is NULL so the account is not writable.
+    FD_LOG_DEBUG(( "fd_acc_mgr_save: account is not writable: %32J", account->pubkey ));
     return FD_ACC_MGR_SUCCESS;
   }
 
@@ -345,6 +372,7 @@ fd_acc_mgr_save( fd_acc_mgr_t *          acc_mgr,
 
   if( account->meta == NULL ) {
     // The meta is NULL so the account is not writable.
+    FD_LOG_DEBUG(( "fd_acc_mgr_save: account is not writable: %32J", account->pubkey ));
     return FD_ACC_MGR_SUCCESS;
   }
 
@@ -372,6 +400,18 @@ fd_acc_mgr_save( fd_acc_mgr_t *          acc_mgr,
   account->orig_data = account->const_data = account->data = (uchar *)meta + meta->hlen;
 
   return FD_ACC_MGR_SUCCESS;
+}
+
+void
+fd_acc_mgr_lock( fd_acc_mgr_t * acc_mgr ) {
+  FD_TEST( !acc_mgr->is_locked );
+  acc_mgr->is_locked = 1;
+}
+
+void
+fd_acc_mgr_unlock( fd_acc_mgr_t * acc_mgr ) {
+  FD_TEST( acc_mgr->is_locked );
+  acc_mgr->is_locked = 0;
 }
 
 struct fd_acc_mgr_save_task_args {
@@ -529,4 +569,3 @@ fd_acc_mgr_save_many_tpool( fd_acc_mgr_t *          acc_mgr,
     return FD_ACC_MGR_SUCCESS;
   } FD_SCRATCH_SCOPE_END;
 }
-

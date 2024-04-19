@@ -7,6 +7,13 @@
 
 FD_PROTOTYPES_BEGIN
 
+/* fd_sysvar_rent_init copies the cached rent sysvar stored from
+   fd_exec_slot_ctx_t to the corresponding account in the database.
+   Note that it does NOT initialize global->bank.rent */
+
+void
+fd_sysvar_rent_init( fd_exec_slot_ctx_t * slot_ctx );
+
 /* fd_sysvar_rent_read queries the rent sysvar from the given slot
    context.  Rent sysvar is written into *result (may be uninitialized).
    Returns result on success, NULL otherwise. */
@@ -15,16 +22,14 @@ fd_rent_t *
 fd_sysvar_rent_read( fd_rent_t *          result,
                      fd_exec_slot_ctx_t * slot_ctx );
 
-/* fd_rent_exempt_minimum_balance looks up the minimum balance needed
+/* fd_rent_exempt_minimum_balance returns the minimum balance needed
    for an account with the given data_len to be rent exempt.  slot_ctx
-   is a slot execution context that has a rent sysvar.  Returns 0 and
-   sets *min_balance on success.  On failure, returns an error code in
-   FD_EXECUTOR_INSTR_ERR_{...} and leaves *min_balance undefined. */
+   is a slot execution context that has a rent sysvar.  (Aborts program
+   if rent sysvar is invalid) */
 
-int
+ulong
 fd_rent_exempt_minimum_balance( fd_exec_slot_ctx_t * slot_ctx,
-                                ulong                data_len,
-                                ulong *              min_balance );
+                                ulong                data_len );
 
 /* fd_rent_exempt_minimum_balance2 returns the minimum balance needed
    for an account with the given data_len to be rent exempt.  rent
