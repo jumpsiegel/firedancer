@@ -1,3 +1,5 @@
+ifdef FD_HAS_ROCKSDB
+
 ifdef FD_HAS_INT128
 $(call add-hdrs,fd_bpf_loader_v1_program.h)
 $(call add-objs,fd_bpf_loader_v1_program,fd_flamenco)
@@ -48,4 +50,6 @@ $(call add-objs,fd_bpf_loader_serialization,fd_flamenco)
 $(call add-hdrs,fd_program_util.h)
 $(call add-hdrs,fd_bpf_program_util.h)
 $(call add-objs,fd_bpf_program_util,fd_flamenco)
+endif
+
 endif

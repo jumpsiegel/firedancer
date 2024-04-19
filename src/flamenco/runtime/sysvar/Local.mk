@@ -1,3 +1,5 @@
+ifdef FD_HAS_ROCKSDB
+
 ifdef FD_HAS_INT128
 $(call add-hdrs,fd_sysvar.h fd_sysvar_cache.h)
 $(call add-objs,fd_sysvar,fd_flamenco)
@@ -38,4 +40,6 @@ $(call add-objs,fd_sysvar_slot_history,fd_flamenco)
 
 $(call add-hdrs,fd_sysvar_stake_history.h)
 $(call add-objs,fd_sysvar_stake_history,fd_flamenco)
+endif
+
 endif
