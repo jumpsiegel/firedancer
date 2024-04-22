@@ -131,8 +131,8 @@ FD_SCRATCH_SCOPE_BEGIN {
     if ( account->const_meta->dlen == 0 ) {
       return 0;
     } else if ( account->const_meta->dlen == 80 ) { // TODO: none size macro
-      fd_bincode_decode_ctx_t decode = { .data = account->const_data, 
-                                         .dataend = account->const_data + account->const_meta->dlen, 
+      fd_bincode_decode_ctx_t decode = { .data = account->const_data,
+                                         .dataend = account->const_data + account->const_meta->dlen,
                                          .valloc = fd_scratch_virtual() };
       fd_nonce_state_versions_t nonce_versions;
       if (fd_nonce_state_versions_decode( &nonce_versions, &decode ) != 0 ) {
@@ -241,7 +241,7 @@ fd_executor_check_txn_accounts( fd_exec_txn_ctx_t * txn_ctx ) {
   } else {
     requested_loaded_accounts_data_size = ULONG_MAX;
   }
-   
+
   uchar validated_fee_payer = 0;
 
   // Set up accounts in the transaction body and perform checks
@@ -284,7 +284,7 @@ fd_executor_check_txn_accounts( fd_exec_txn_ctx_t * txn_ctx ) {
 
 void
 fd_executor_setup_accessed_accounts_for_txn( fd_exec_txn_ctx_t * txn_ctx ) {
-  
+
   fd_pubkey_t * tx_accs   = (fd_pubkey_t *)((uchar *)txn_ctx->_txn_raw->raw + txn_ctx->txn_descriptor->acct_addr_off);
 
   // Set up accounts in the transaction body and perform checks
@@ -299,9 +299,9 @@ fd_executor_setup_accessed_accounts_for_txn( fd_exec_txn_ctx_t * txn_ctx ) {
     ulong readonly_lut_accs_cnt = 0;
 
     // Set up accounts in the account look up tables.
-    fd_txn_acct_addr_lut_t * addr_luts = fd_txn_get_address_tables( txn_ctx->txn_descriptor );
+    const fd_txn_acct_addr_lut_t * addr_luts = fd_txn_get_address_tables_const( txn_ctx->txn_descriptor );
     for( ulong i = 0; i < txn_ctx->txn_descriptor->addr_table_lookup_cnt; i++ ) {
-      fd_txn_acct_addr_lut_t * addr_lut = &addr_luts[i];
+      const fd_txn_acct_addr_lut_t * addr_lut = &addr_luts[i];
       fd_pubkey_t const * addr_lut_acc = (fd_pubkey_t *)((uchar *)txn_ctx->_txn_raw->raw + addr_lut->addr_off);
 
       FD_BORROWED_ACCOUNT_DECL(addr_lut_rec);
@@ -725,9 +725,8 @@ fd_execute_txn_prepare_phase3( fd_exec_slot_ctx_t * slot_ctx,
     }
 
     fd_pubkey_t * tx_accs   = txn_ctx->accounts;
-    fd_txn_acct_iter_t ctrl;
-    for( ulong i = fd_txn_acct_iter_init( txn_ctx->txn_descriptor, FD_TXN_ACCT_CAT_WRITABLE & FD_TXN_ACCT_CAT_IMM, &ctrl );
-            i < fd_txn_acct_iter_end(); i=fd_txn_acct_iter_next( i, &ctrl ) ) {
+    for( ulong i = fd_txn_acct_iter_init( txn_ctx->txn_descriptor, FD_TXN_ACCT_CAT_WRITABLE & FD_TXN_ACCT_CAT_IMM );
+            i != fd_txn_acct_iter_end(); i=fd_txn_acct_iter_next( i ) ) {
       fd_pubkey_t * acct = &tx_accs[i];
       int is_writable = fd_txn_account_is_writable_idx(txn_ctx->txn_descriptor, tx_accs, (int)i) &&
                           !fd_txn_account_is_demotion( txn_ctx, (int)i );
@@ -747,7 +746,7 @@ fd_execute_txn_prepare_phase3( fd_exec_slot_ctx_t * slot_ctx,
       elem->cu_consumed += est_cost;
     }
   }
-  
+
   return 0;
 }
 
@@ -760,9 +759,8 @@ fd_execute_txn_prepare_phase4( fd_exec_slot_ctx_t * slot_ctx,
         Also iterate over LUT accounts */
   if( FD_FEATURE_ACTIVE( slot_ctx, set_exempt_rent_epoch_max ) ) {
     fd_pubkey_t * tx_accs   = (fd_pubkey_t *)((uchar *)txn_ctx->_txn_raw->raw + txn_ctx->txn_descriptor->acct_addr_off);
-    fd_txn_acct_iter_t ctrl;
-    for( ulong i = fd_txn_acct_iter_init( txn_ctx->txn_descriptor, FD_TXN_ACCT_CAT_WRITABLE, &ctrl );
-          i < fd_txn_acct_iter_end(); i=fd_txn_acct_iter_next( i, &ctrl ) ) {
+    for( ulong i = fd_txn_acct_iter_init( txn_ctx->txn_descriptor, FD_TXN_ACCT_CAT_WRITABLE  );
+          i != fd_txn_acct_iter_end(); i=fd_txn_acct_iter_next( i ) ) {
       if( (i == 0) || fd_pubkey_is_sysvar_id( &tx_accs[i] ) )
         continue;
       fd_set_exempt_rent_epoch_max( txn_ctx, &tx_accs[i] );
