@@ -1,7 +1,6 @@
 #ifndef HEADER_fd_src_flamenco_runtime_fd_sysvar_h
 #define HEADER_fd_src_flamenco_runtime_fd_sysvar_h
 
-<<<<<<< HEAD
 #include "../fd_executor.h"
 #include "../../../ballet/base58/fd_base58.h"
 #include "../fd_runtime.h"
@@ -17,9 +16,6 @@
 #include "fd_sysvar_stake_history.h"
 #include "fd_sysvar_last_restart_slot.h"
 #include "fd_sysvar_instructions.h"
-=======
-#include "../../fd_flamenco_base.h"
->>>>>>> main
 
 int
 fd_sysvar_set( fd_exec_slot_ctx_t * state,
@@ -28,12 +24,6 @@ fd_sysvar_set( fd_exec_slot_ctx_t * state,
                uchar *              data,
                ulong                sz,
                ulong                slot,
-<<<<<<< HEAD
-               fd_acc_lamports_t const * lamports );
-
-#endif
-=======
                ulong                lamports );
 
-#endif /* HEADER_fd_src_flamenco_runtime_fd_sysvar_h */
->>>>>>> main
+#endif

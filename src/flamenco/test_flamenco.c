@@ -1,11 +1,5 @@
 #include "fd_flamenco.h"
 
-<<<<<<< HEAD
-=======
-#pragma GCC diagnostic ignored "-Wformat"
-#pragma GCC diagnostic ignored "-Wformat-extra-args"
-
->>>>>>> main
 int
 main( int     argc,
       char ** argv ) {

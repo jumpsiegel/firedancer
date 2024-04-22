@@ -2,6 +2,7 @@
 #include "fd_runtime.h"
 #include "fd_account.h"
 #include "fd_hashes.h"
+#include "sysvar/fd_sysvar_cache.h"
 #include "sysvar/fd_sysvar_clock.h"
 #include "sysvar/fd_sysvar_epoch_schedule.h"
 #include "sysvar/fd_sysvar.h"
@@ -30,12 +31,13 @@
 #include "fd_system_ids.h"
 #include "../vm/fd_vm_context.h"
 #include "fd_blockstore.h"
+#include "../../ballet/pack/fd_pack.h"
 
 #include <stdio.h>
 #include <ctype.h>
 #include <unistd.h>
 
-#define MICRO_LAMPORTS_PER_LAMPORT (1000000UL)
+#define MICRO_LAMPORTS_PER_LAMPORT                 (1000000UL)
 
 void
 fd_runtime_init_bank_from_genesis( fd_exec_slot_ctx_t * slot_ctx,
@@ -51,8 +53,8 @@ fd_runtime_init_bank_from_genesis( fd_exec_slot_ctx_t * slot_ctx,
 
   fd_poh_config_t *poh = &genesis_block->poh_config;
 
-  if (poh->hashes_per_tick)
-    slot_ctx->epoch_ctx->epoch_bank.hashes_per_tick = *poh->hashes_per_tick;
+  if (poh->has_hashes_per_tick)
+    slot_ctx->epoch_ctx->epoch_bank.hashes_per_tick = poh->hashes_per_tick;
   else
     slot_ctx->epoch_ctx->epoch_bank.hashes_per_tick = 0;
   slot_ctx->epoch_ctx->epoch_bank.ticks_per_slot = genesis_block->ticks_per_slot;
@@ -76,6 +78,19 @@ fd_runtime_init_bank_from_genesis( fd_exec_slot_ctx_t * slot_ctx,
   fd_block_block_hash_entry_new(elem);
   fd_memcpy(elem->blockhash.hash, genesis_hash, FD_SHA256_HASH_SZ);
   elem->fee_calculator.lamports_per_signature = 0;
+
+  slot_ctx->slot_bank.block_hash_queue.ages_root = NULL;
+  slot_ctx->slot_bank.block_hash_queue.ages_pool = fd_hash_hash_age_pair_t_map_alloc( slot_ctx->valloc, 400 );
+  fd_hash_hash_age_pair_t_mapnode_t * node = fd_hash_hash_age_pair_t_map_acquire( slot_ctx->slot_bank.block_hash_queue.ages_pool );
+  node->elem = (fd_hash_hash_age_pair_t){
+    .key = *genesis_hash,
+    .val = (fd_hash_age_t){ .hash_index = 0, .fee_calculator = (fd_fee_calculator_t){.lamports_per_signature = 5000}, .timestamp = (ulong)fd_log_wallclock() }
+  };
+  fd_hash_hash_age_pair_t_map_insert( slot_ctx->slot_bank.block_hash_queue.ages_pool, &slot_ctx->slot_bank.block_hash_queue.ages_root, node );
+  slot_ctx->slot_bank.block_hash_queue.last_hash_index = 0;
+  slot_ctx->slot_bank.block_hash_queue.last_hash = fd_valloc_malloc( slot_ctx->valloc, FD_HASH_ALIGN, FD_HASH_FOOTPRINT );
+  fd_memcpy( slot_ctx->slot_bank.block_hash_queue.last_hash, genesis_hash, FD_SHA256_HASH_SZ );
+  slot_ctx->slot_bank.block_hash_queue.max_age = FD_BLOCKHASH_QUEUE_MAX_ENTRIES;
 
   slot_ctx->signature_cnt = 0;
 
@@ -298,9 +313,7 @@ int fd_runtime_parse_microblock_hdr(void const *buf,
 int fd_runtime_parse_microblock_txns( void const * buf,
                                       ulong buf_sz,
                                       fd_microblock_hdr_t const * microblock_hdr,
-                                      void * out_txn_buf,
-                                      fd_rawtxn_b_t * out_raw_txns,
-                                      fd_txn_t ** out_txn_ptrs,
+                                      fd_txn_p_t * out_txns,
                                       ulong * out_signature_cnt,
                                       ulong * out_account_cnt,
                                       ulong * out_microblock_txns_sz ) {
@@ -308,23 +321,19 @@ int fd_runtime_parse_microblock_txns( void const * buf,
   ulong signature_cnt = 0;
   ulong account_cnt = 0;
 
-  for (ulong i = 0; i < microblock_hdr->txn_cnt; i++)
-  {
-    out_raw_txns[i].raw = (uchar *)buf + buf_off;
-    out_txn_ptrs[i] = out_txn_buf;
+  for (ulong i = 0; i < microblock_hdr->txn_cnt; i++) {
     ulong payload_sz = 0;
-    ulong txn_sz = fd_txn_parse_core((uchar const *)buf + buf_off, fd_ulong_min(buf_sz - buf_off, FD_TXN_MTU), out_txn_buf, NULL, &payload_sz, 0);
-    if (txn_sz == 0 || txn_sz > FD_TXN_MTU)
-    {
+    ulong txn_sz = fd_txn_parse_core((uchar const *)buf + buf_off, fd_ulong_min( buf_sz-buf_off, FD_TXN_MTU), TXN(&out_txns[i]), NULL, &payload_sz, 0);
+    if (txn_sz == 0 || txn_sz > FD_TXN_MTU) {
       return -1;
     }
 
-    out_raw_txns[i].txn_sz = (ushort)payload_sz;
+    fd_memcpy( out_txns[i].payload, (uchar *)buf + buf_off, payload_sz );
+    out_txns[i].payload_sz = (ushort)payload_sz;
 
-    signature_cnt += out_txn_ptrs[i]->signature_cnt;
-    account_cnt += fd_txn_account_cnt( out_txn_ptrs[i], FD_TXN_ACCT_CAT_ALL );
+    signature_cnt += TXN(&out_txns[i])->signature_cnt;
+    account_cnt += fd_txn_account_cnt( TXN(&out_txns[i]), FD_TXN_ACCT_CAT_ALL );
     buf_off += payload_sz;
-    out_txn_buf = (uchar *)out_txn_buf + FD_TXN_MAX_SZ;
   }
 
   *out_signature_cnt = signature_cnt;
@@ -352,24 +361,18 @@ int fd_runtime_microblock_prepare(void const *buf,
   buf_off += hdr_sz;
 
   ulong txn_cnt = microblock_info.microblock_hdr.txn_cnt;
-  microblock_info.txn_buf = fd_valloc_malloc(valloc, fd_txn_align(), txn_cnt * FD_TXN_MAX_SZ);
-  microblock_info.txn_ptrs = fd_valloc_malloc(valloc, alignof(fd_txn_t *), txn_cnt * sizeof(fd_txn_t *));
-  microblock_info.raw_txns = fd_valloc_malloc(valloc, alignof(fd_rawtxn_b_t), txn_cnt * sizeof(fd_rawtxn_b_t));
+  microblock_info.txns = fd_valloc_malloc(valloc, alignof(fd_txn_p_t), txn_cnt * sizeof(fd_txn_p_t));
 
   ulong txns_sz = 0;
   if (fd_runtime_parse_microblock_txns((uchar *)buf + buf_off,
                                        buf_sz - buf_off,
                                        &microblock_info.microblock_hdr,
-                                       microblock_info.txn_buf,
-                                       microblock_info.raw_txns,
-                                       microblock_info.txn_ptrs,
+                                       microblock_info.txns,
                                        &microblock_info.signature_cnt,
                                        &microblock_info.account_cnt,
                                        &txns_sz) != 0)
   {
-    fd_valloc_free(valloc, microblock_info.txn_buf);
-    fd_valloc_free(valloc, microblock_info.txn_ptrs);
-    fd_valloc_free(valloc, microblock_info.raw_txns);
+    fd_valloc_free(valloc, microblock_info.txns);
     return -1;
   }
   buf_off += txns_sz;
@@ -407,9 +410,8 @@ int fd_runtime_microblock_batch_prepare(void const *buf,
   ulong signature_cnt = 0;
   ulong txn_cnt = 0;
   ulong account_cnt = 0;
-  for (ulong i = 0; i < microblock_cnt; i++)
-  {
-    fd_microblock_info_t *microblock_info = &microblock_batch_info.microblock_infos[i];
+  for (ulong i = 0; i < microblock_cnt; i++) {
+    fd_microblock_info_t * microblock_info = &microblock_batch_info.microblock_infos[i];
     if (fd_runtime_microblock_prepare((uchar const *)buf + buf_off, buf_sz - buf_off, valloc, microblock_info) != 0)
     {
       fd_valloc_free(valloc, microblock_batch_info.microblock_infos);
@@ -434,23 +436,19 @@ int fd_runtime_microblock_batch_prepare(void const *buf,
 
 ulong
 fd_runtime_microblock_collect_txns( fd_microblock_info_t const * microblock_info,
-                                    fd_rawtxn_b_t * raw_txns,
-                                    fd_txn_t * * txn_ptrs ) {
+                                    fd_txn_p_t * out_txns ) {
   ulong txn_cnt = microblock_info->microblock_hdr.txn_cnt;
-  fd_memcpy( raw_txns, microblock_info->raw_txns, txn_cnt * sizeof(fd_rawtxn_b_t) );
-  fd_memcpy( txn_ptrs, microblock_info->txn_ptrs, txn_cnt * sizeof(fd_txn_t *) );
+  fd_memcpy( out_txns, microblock_info->txns, txn_cnt * sizeof(fd_txn_p_t) );
 
   return txn_cnt;
 }
 
 ulong
 fd_runtime_microblock_batch_collect_txns( fd_microblock_batch_info_t const * microblock_batch_info,
-                                          fd_rawtxn_b_t * raw_txns,
-                                          fd_txn_t * * txn_ptrs ) {
+                                          fd_txn_p_t * out_txns ) {
   for( ulong i = 0; i < microblock_batch_info->microblock_cnt; i++ ) {
-    ulong txns_collected = fd_runtime_microblock_collect_txns( &microblock_batch_info->microblock_infos[i], raw_txns, txn_ptrs );
-    raw_txns += txns_collected;
-    txn_ptrs += txns_collected;
+    ulong txns_collected = fd_runtime_microblock_collect_txns( &microblock_batch_info->microblock_infos[i], out_txns );
+    out_txns += txns_collected;
   }
 
   return microblock_batch_info->txn_cnt;
@@ -458,12 +456,10 @@ fd_runtime_microblock_batch_collect_txns( fd_microblock_batch_info_t const * mic
 
 ulong
 fd_runtime_block_collect_txns( fd_block_info_t const * block_info,
-                               fd_rawtxn_b_t * raw_txns,
-                               fd_txn_t * * txn_ptrs ) {
+                               fd_txn_p_t * out_txns ) {
   for( ulong i = 0; i < block_info->microblock_batch_cnt; i++ ) {
-    ulong txns_collected = fd_runtime_microblock_batch_collect_txns( &block_info->microblock_batch_infos[i], raw_txns, txn_ptrs );
-    raw_txns += txns_collected;
-    txn_ptrs += txns_collected;
+    ulong txns_collected = fd_runtime_microblock_batch_collect_txns( &block_info->microblock_batch_infos[i], out_txns );
+    out_txns += txns_collected;
   }
 
   return block_info->txn_cnt;
@@ -531,9 +527,7 @@ fd_runtime_microblock_destroy( fd_valloc_t valloc,
     return;
   }
 
-  fd_valloc_free(valloc, microblock_info->txn_buf);
-  fd_valloc_free(valloc, microblock_info->txn_ptrs);
-  fd_valloc_free(valloc, microblock_info->raw_txns);
+  fd_valloc_free( valloc, microblock_info->txns );
 }
 
 void
@@ -557,7 +551,7 @@ fd_runtime_block_destroy( fd_valloc_t valloc,
     fd_runtime_microblock_batch_destroy( valloc, &block_info->microblock_batch_infos[i] );
   }
 
-  fd_valloc_free(valloc, block_info->microblock_batch_infos);
+  fd_valloc_free( valloc, block_info->microblock_batch_infos );
 }
 
 int
@@ -567,8 +561,10 @@ fd_runtime_microblock_execute( fd_exec_slot_ctx_t * slot_ctx,
 
   /* Loop across transactions */
   for (ulong txn_idx = 0; txn_idx < hdr->txn_cnt; txn_idx++) {
-    fd_txn_t const *txn = microblock_info->txn_ptrs[txn_idx];
-    fd_rawtxn_b_t const *raw_txn = &microblock_info->raw_txns[txn_idx];
+    fd_txn_p_t * txn_p = &microblock_info->txns[txn_idx];
+
+    fd_txn_t const *txn = (fd_txn_t const *) txn_p->_;
+    fd_rawtxn_b_t raw_txn[1] = {{.raw = txn_p->payload, .txn_sz = (ushort)txn_p->payload_sz}};
 
     // FD_LOG_DEBUG(("executing txn - slot: %lu, txn_idx: %lu, sig: %64J", slot_ctx->slot_bank.slot, txn_idx, (uchar *)raw_txn->raw + txn->signature_off));
 
@@ -585,7 +581,7 @@ fd_runtime_microblock_execute( fd_exec_slot_ctx_t * slot_ctx,
       return -1;
     }
 
-    res = fd_execute_txn_prepare_phase3( slot_ctx, &txn_ctx );
+    res = fd_execute_txn_prepare_phase3( slot_ctx, &txn_ctx, txn_p );
     if (res != 0) {
       FD_LOG_ERR(("could not prepare txn"));
       return -1;
@@ -604,12 +600,6 @@ fd_runtime_microblock_execute( fd_exec_slot_ctx_t * slot_ctx,
 
   return 0;
 }
-
-struct fd_execute_txn_task_info {
-  fd_exec_txn_ctx_t * txn_ctx;
-  int exec_res;
-};
-typedef struct fd_execute_txn_task_info fd_execute_txn_task_info_t;
 
 static void
 fd_runtime_execute_txn_task(void *tpool,
@@ -671,34 +661,38 @@ fd_runtime_execute_txn_task(void *tpool,
 int
 fd_runtime_prepare_txns_phase1( fd_exec_slot_ctx_t * slot_ctx,
                          fd_execute_txn_task_info_t * task_info,
-                         fd_txn_t * * txn_ptrs,
-                         fd_rawtxn_b_t * raw_txns,
+                         fd_txn_p_t * txns,
                          ulong txn_cnt ) {
+  int result = 0;
   /* Loop across transactions */
   for (ulong txn_idx = 0; txn_idx < txn_cnt; txn_idx++) {
-    fd_txn_t const * txn = txn_ptrs[txn_idx];
-    fd_rawtxn_b_t const * raw_txn = &raw_txns[txn_idx];
+    fd_txn_p_t * txn = &txns[txn_idx];
 
     // FD_LOG_DEBUG(("preparing txn - slot: %lu, txn_idx: %lu, sig: %64J", slot_ctx->slot_bank.slot, txn_idx, (uchar *)raw_txn->raw + txn->signature_off));
 
     task_info[txn_idx].txn_ctx = fd_valloc_malloc( slot_ctx->valloc, FD_EXEC_TXN_CTX_ALIGN, FD_EXEC_TXN_CTX_FOOTPRINT );
     fd_exec_txn_ctx_t * txn_ctx = task_info[txn_idx].txn_ctx;
     task_info[txn_idx].exec_res = -1;
-
-    int res = fd_execute_txn_prepare_phase1(slot_ctx, txn_ctx, txn, raw_txn);
+    task_info[txn_idx].txn = txn;
+    fd_txn_t const * txn_descriptor = (fd_txn_t const *) txn->_;
+    fd_rawtxn_b_t raw_txn = {.raw = txn->payload, .txn_sz = (ushort)txn->payload_sz };
+    int res = fd_execute_txn_prepare_phase1(slot_ctx, txn_ctx, txn_descriptor, &raw_txn);
     if( res != 0 ) {
-      FD_LOG_ERR(("could not prepare txn"));
-      return -1;
+      txn->flags = 0;
+      result = res;
+      break;
     }
   }
 
-  return 0;
+  return result;
 }
 
 int
 fd_runtime_prepare_txns_phase2( fd_exec_slot_ctx_t * slot_ctx,
                                 fd_execute_txn_task_info_t * task_info,
+                                fd_txn_p_t * txns,
                                 ulong txn_cnt ) {
+  int result = 0;
   /* Loop across transactions */
   for (ulong txn_idx = 0; txn_idx < txn_cnt; txn_idx++) {
     fd_exec_txn_ctx_t * txn_ctx = task_info[txn_idx].txn_ctx;
@@ -706,12 +700,13 @@ fd_runtime_prepare_txns_phase2( fd_exec_slot_ctx_t * slot_ctx,
 
     int res = fd_execute_txn_prepare_phase2( slot_ctx, txn_ctx );
     if( res != 0 ) {
-      FD_LOG_ERR(("could not prepare txn"));
-      return -1;
+      FD_LOG_DEBUG(("could not prepare txn phase 2"));
+      txns[txn_idx].flags = 0;
+      result = -1;
     }
   }
 
-  return 0;
+  return result;
 }
 
 struct fd_collect_fee_task_info {
@@ -787,7 +782,7 @@ fd_runtime_prepare_txns_phase2_tpool( fd_exec_slot_ctx_t * slot_ctx,
       slot_ctx->slot_bank.collected_fees += collect_fee_task_info->fee;
     }
 
-    int err = fd_acc_mgr_save_many_tpool( slot_ctx->acc_mgr, slot_ctx->funk_txn, slot_ctx->valloc, fee_payer_accs, txn_cnt, tpool, max_workers );
+    int err = fd_acc_mgr_save_many_tpool( slot_ctx->acc_mgr, slot_ctx->funk_txn, fee_payer_accs, txn_cnt, tpool, max_workers );
     if( FD_UNLIKELY( err ) ) {
       FD_LOG_WARNING(( "fd_acc_mgr_save_many failed (%d-%s)", err, fd_acc_mgr_strerror( err ) ));
       return -1;
@@ -801,71 +796,47 @@ int
 fd_runtime_prepare_txns_phase3( fd_exec_slot_ctx_t * slot_ctx,
                                 fd_execute_txn_task_info_t * task_info,
                                 ulong txn_cnt ) {
+  int result = 0;
   /* Loop across transactions */
   for (ulong txn_idx = 0; txn_idx < txn_cnt; txn_idx++) {
     fd_exec_txn_ctx_t * txn_ctx = task_info[txn_idx].txn_ctx;
 
-    int res = fd_execute_txn_prepare_phase3( slot_ctx, txn_ctx );
+    int res = fd_execute_txn_prepare_phase3( slot_ctx, txn_ctx, task_info[txn_idx].txn );
     if( res != 0 ) {
-      FD_LOG_ERR(("could not prepare txn"));
-      return -1;
+      FD_LOG_DEBUG(("could not prepare txn phase 3"));
+      task_info[txn_idx].txn->flags = 0;
+      result = res;
     }
   }
 
-  return 0;
-}
-
-int
-fd_runtime_prepare_txns_phase4( fd_exec_slot_ctx_t * slot_ctx,
-                                fd_execute_txn_task_info_t * task_info,
-                                ulong txn_cnt ) {
-  /* Loop across transactions */
-  for (ulong txn_idx = 0; txn_idx < txn_cnt; txn_idx++) {
-    fd_exec_txn_ctx_t * txn_ctx = task_info[txn_idx].txn_ctx;
-
-    int res = fd_execute_txn_prepare_phase4( slot_ctx, txn_ctx );
-    if( res != 0 ) {
-      FD_LOG_ERR(("could not prepare txn"));
-      return -1;
-    }
-  }
-
-  return 0;
+  return result;
 }
 
 int
 fd_runtime_prepare_txns( fd_exec_slot_ctx_t * slot_ctx,
                          fd_execute_txn_task_info_t * task_info,
-                         fd_txn_t * * txn_ptrs,
-                         fd_rawtxn_b_t * raw_txns,
+                         fd_txn_p_t * txns,
                          ulong txn_cnt ) {
-  int res = fd_runtime_prepare_txns_phase1( slot_ctx, task_info, txn_ptrs, raw_txns, txn_cnt );
-  if( res != 0 ) {
-    return res;
+  for (ulong i = 0; i < txn_cnt; i++) {
+    txns[i].flags = FD_TXN_P_FLAGS_SANITIZE_SUCCESS;
   }
+  int res = fd_runtime_prepare_txns_phase1( slot_ctx, task_info, txns, txn_cnt );
 
-  res = fd_runtime_prepare_txns_phase2( slot_ctx, task_info, txn_cnt );
-  if( res != 0 ) {
-    return res;
-  }
+  res |= fd_runtime_prepare_txns_phase2( slot_ctx, task_info, txns, txn_cnt );
 
-  res = fd_runtime_prepare_txns_phase3( slot_ctx, task_info, txn_cnt );
-  if( res != 0 ) {
-    return res;
-  }
+  res |= fd_runtime_prepare_txns_phase3( slot_ctx, task_info, txn_cnt );
 
-  return 0;
+  return res;
 }
 
 int
 fd_runtime_prepare_txns_tpool( fd_exec_slot_ctx_t * slot_ctx,
                          fd_execute_txn_task_info_t * task_info,
-                         fd_txn_t * * txn_ptrs,
-                         fd_rawtxn_b_t * raw_txns,
+                         fd_txn_p_t * txns,
                          ulong txn_cnt,
                          fd_tpool_t * tpool,
                          ulong max_workers ) {
-  int res = fd_runtime_prepare_txns_phase1( slot_ctx, task_info, txn_ptrs, raw_txns, txn_cnt );
+  int res = fd_runtime_prepare_txns_phase1( slot_ctx, task_info, txns, txn_cnt );
   if( res != 0 ) {
     return res;
   }
@@ -924,9 +895,28 @@ fd_runtime_finalize_txns_tpool( fd_exec_slot_ctx_t * slot_ctx,
               solana_txn_err = txn_status.err.err->bytes[0];
             }
 
-            fd_solcap_write_transaction( capture_ctx->capture, sig, exec_txn_err,
-                                        txn_ctx->custom_err, slot_ctx->slot_bank.slot,
-                                        fd_cus_consumed, solana_cus_consumed, solana_txn_err );
+            fd_solcap_Transaction txn = {
+              .slot            = slot_ctx->slot_bank.slot,
+              .fd_txn_err      = exec_txn_err,
+              .fd_custom_err   = txn_ctx->custom_err,
+              .solana_txn_err  = solana_txn_err,
+              .fd_cus_used     = fd_cus_consumed,
+              .solana_cus_used = solana_cus_consumed,
+            };
+            memcpy( txn.txn_sig, sig, sizeof(fd_signature_t) );
+
+            fd_exec_instr_ctx_t const * failed_instr = txn_ctx->failed_instr;
+            if( failed_instr ) {
+              assert( failed_instr->depth < 4 );
+              txn.instr_err               = failed_instr->instr_err;
+              txn.failed_instr_path_count = failed_instr->depth + 1;
+              for( long j = failed_instr->depth; j>=0L; j-- ) {
+                txn.failed_instr_path[j] = failed_instr->index;
+                failed_instr             = failed_instr->parent;
+              }
+            }
+
+            fd_solcap_write_transaction2( capture_ctx->capture, &txn );
           }
         }
       }
@@ -941,12 +931,52 @@ fd_runtime_finalize_txns_tpool( fd_exec_slot_ctx_t * slot_ctx,
         continue;
       }
 
+      int dirty_vote_acc  = txn_ctx->dirty_vote_acc;
+      int dirty_stake_acc = txn_ctx->dirty_stake_acc;
+
       for( ulong i = 0; i < txn_ctx->accounts_cnt; i++ ) {
+        fd_borrowed_account_t * acc_rec = &txn_ctx->borrowed_accounts[i];
+
         if( !fd_txn_account_is_writable_idx(txn_ctx->txn_descriptor, txn_ctx->accounts, (int)i) ) {
           continue;
         }
 
-        fd_borrowed_account_t * acc_rec = &txn_ctx->borrowed_accounts[i];
+        if( dirty_vote_acc && 0==memcmp( acc_rec->const_meta->info.owner, &fd_solana_vote_program_id, sizeof(fd_pubkey_t) ) ) {
+          fd_vote_store_account( slot_ctx, acc_rec );
+          FD_SCRATCH_SCOPE_BEGIN {
+            fd_vote_state_versioned_t vsv[1];
+            fd_bincode_decode_ctx_t decode_vsv =
+              { .data    = acc_rec->const_data,
+                .dataend = acc_rec->const_data + acc_rec->const_meta->dlen,
+                .valloc  = fd_scratch_virtual() };
+
+            int err = fd_vote_state_versioned_decode( vsv, &decode_vsv );
+            if( err ) break; /* out of scratch scope */
+
+            fd_vote_block_timestamp_t const * ts = NULL;
+            switch( vsv->discriminant ) {
+            case fd_vote_state_versioned_enum_v0_23_5:
+              ts = &vsv->inner.v0_23_5.last_timestamp;
+              break;
+            case fd_vote_state_versioned_enum_v1_14_11:
+              ts = &vsv->inner.v1_14_11.last_timestamp;
+              break;
+            case fd_vote_state_versioned_enum_current:
+              ts = &vsv->inner.current.last_timestamp;
+              break;
+            default:
+              __builtin_unreachable();
+            }
+
+            fd_vote_record_timestamp_vote_with_slot( slot_ctx, acc_rec->pubkey, ts->timestamp, ts->slot );
+          }
+          FD_SCRATCH_SCOPE_END;
+        }
+
+        if( dirty_stake_acc && 0==memcmp( acc_rec->const_meta->info.owner, &fd_solana_stake_program_id, sizeof(fd_pubkey_t) ) ) {
+          // TODO does this correctly handle stake account close?
+          fd_store_stake_delegation( slot_ctx, acc_rec );
+        }
 
         if( txn_ctx->unknown_accounts[i] ) {
           memset( acc_rec->meta->hash, 0xFF, sizeof(fd_hash_t) );
@@ -987,7 +1017,7 @@ fd_runtime_finalize_txns_tpool( fd_exec_slot_ctx_t * slot_ctx,
     }
 
     // TODO: we need to use the txn ctx funk_txn, valloc, etc.
-    int err = fd_acc_mgr_save_many_tpool( slot_ctx->acc_mgr, slot_ctx->funk_txn, slot_ctx->valloc, accounts_to_save, accounts_to_save_cnt, tpool, max_workers );
+    int err = fd_acc_mgr_save_many_tpool( slot_ctx->acc_mgr, slot_ctx->funk_txn, accounts_to_save, accounts_to_save_cnt, tpool, max_workers );
     if( err != FD_ACC_MGR_SUCCESS ) {
       FD_LOG_ERR(( "failed to save edits to accounts" ));
       return -1;
@@ -1020,58 +1050,40 @@ fd_runtime_finalize_txns_tpool( fd_exec_slot_ctx_t * slot_ctx,
 }
 
 
-int
-fd_runtime_finalize_txns( fd_exec_slot_ctx_t * slot_ctx,
-                          fd_execute_txn_task_info_t * task_info,
-                          ulong txn_cnt ) {
-  /* Finalize */
-  for (ulong txn_idx = 0; txn_idx < txn_cnt; txn_idx++) {
-    fd_exec_txn_ctx_t * txn_ctx = task_info[txn_idx].txn_ctx;
-    int exec_res = task_info[txn_idx].exec_res;
-
-    int res = fd_execute_txn_finalize( slot_ctx, txn_ctx, exec_res );
-    if( res != 0 ) {
-      FD_LOG_ERR(( "could not finalize txn" ));
-      return -1;
-    }
-  }
-
-  int ret = fd_funk_txn_merge_all_children(slot_ctx->acc_mgr->funk, slot_ctx->funk_txn, 1);
-  if( ret != FD_FUNK_SUCCESS ) {
-    FD_LOG_ERR(( "failed merging funk transaction: (%i-%s) ", ret, fd_funk_strerror(ret) ));
-  }
-
-  for (ulong txn_idx = 0; txn_idx < txn_cnt; txn_idx++) {
-    fd_exec_txn_ctx_t * txn_ctx = task_info[txn_idx].txn_ctx;
-    fd_valloc_free( slot_ctx->valloc, txn_ctx );
-  }
-
-  return 0;
-}
-
 /* Make sure there are no dependent txns! */
 int
 fd_runtime_execute_txns_tpool( fd_exec_slot_ctx_t * slot_ctx,
                                fd_capture_ctx_t * capture_ctx,
-                               fd_txn_t * * txn_ptrs,
-                               fd_rawtxn_b_t * raw_txns,
+                               fd_txn_p_t * txns,
                                ulong txn_cnt,
+                               fd_execute_txn_task_info_t * task_infos,
                                fd_tpool_t * tpool,
                                ulong max_workers ) {
-  fd_execute_txn_task_info_t * task_info = fd_valloc_malloc(slot_ctx->valloc, 8UL, txn_cnt * sizeof(fd_execute_txn_task_info_t));
-  int res = fd_runtime_prepare_txns_tpool( slot_ctx, task_info, txn_ptrs, raw_txns, txn_cnt, tpool, max_workers );
-  if( res != 0 ) {
-    return res;
-  }
   fd_funk_set_readonly( slot_ctx->acc_mgr->funk, 1 ); /* Funk is not safe for concurrent writes */
-  fd_tpool_exec_all_taskq( tpool, 0, max_workers, fd_runtime_execute_txn_task, task_info, NULL, NULL, 1, 0, txn_cnt );
+
+  for (ulong i = 0; i < txn_cnt; i++) {
+    if ( !(txns[i].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS) ) {
+      continue;
+    }
+    fd_execute_txn_task_info_t * task_info = &task_infos[i];
+    int res = fd_execute_txn_prepare_phase4( task_info->txn_ctx->slot_ctx, task_info->txn_ctx );
+    if( res != 0 ) {
+      FD_LOG_ERR(("could not prepare txn phase 4")); // this can never happen
+    }
+
+    task_info->exec_res = fd_execute_txn( task_info->txn_ctx );
+    if ( task_info->exec_res == 0 ) {
+      txns[i].flags |= FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
+      slot_ctx->signature_cnt += TXN(&txns[i])->signature_cnt;
+    }
+  }
+
   fd_funk_set_readonly( slot_ctx->acc_mgr->funk, 0 );
-  res = fd_runtime_finalize_txns_tpool( slot_ctx, capture_ctx, task_info, txn_cnt, tpool, max_workers );
+  int res = fd_runtime_finalize_txns_tpool( slot_ctx, capture_ctx, task_infos, txn_cnt, tpool, max_workers );
   if( res != 0 ) {
     return res;
   }
 
-  fd_valloc_free( slot_ctx->valloc, task_info );
   return 0;
 }
 
@@ -1184,8 +1196,7 @@ fd_runtime_generate_wave( fd_execute_txn_task_info_t * task_infos,
 int
 fd_runtime_execute_txns_in_waves_tpool( fd_exec_slot_ctx_t * slot_ctx,
                                         fd_capture_ctx_t * capture_ctx,
-                                        fd_txn_t * * txn_ptrs,
-                                        fd_rawtxn_b_t * raw_txns,
+                                        fd_txn_p_t * txns,
                                         ulong txn_cnt,
                                         fd_tpool_t * tpool,
                                         ulong max_workers ) {
@@ -1193,8 +1204,9 @@ fd_runtime_execute_txns_in_waves_tpool( fd_exec_slot_ctx_t * slot_ctx,
     fd_execute_txn_task_info_t * task_infos = fd_scratch_alloc( 8, txn_cnt * sizeof(fd_execute_txn_task_info_t));
     fd_execute_txn_task_info_t * wave_task_infos = fd_scratch_alloc( 8, txn_cnt * sizeof(fd_execute_txn_task_info_t));
     ulong wave_task_infos_cnt = 0;
-    int res = fd_runtime_prepare_txns_phase1( slot_ctx, task_infos, txn_ptrs, raw_txns, txn_cnt );
+    int res = fd_runtime_prepare_txns_phase1( slot_ctx, task_infos, txns, txn_cnt );
     if( res != 0 ) {
+      FD_LOG_WARNING(("Fail prep 1"));
       return res;
     }
 
@@ -1225,11 +1237,13 @@ fd_runtime_execute_txns_in_waves_tpool( fd_exec_slot_ctx_t * slot_ctx,
 
       res = fd_runtime_prepare_txns_phase2_tpool( slot_ctx, wave_task_infos, wave_task_infos_cnt, tpool, max_workers );
       if( res != 0 ) {
+        FD_LOG_WARNING(("Fail prep 2"));
         return res;
       }
 
       res = fd_runtime_prepare_txns_phase3( slot_ctx, wave_task_infos, wave_task_infos_cnt );
       if( res != 0 ) {
+        FD_LOG_WARNING(("Fail prep 3"));
         return res;
       }
 
@@ -1267,33 +1281,33 @@ int fd_runtime_microblock_batch_execute(fd_exec_slot_ctx_t * slot_ctx,
   return 0;
 }
 
-int
-fd_runtime_microblock_execute_tpool( fd_exec_slot_ctx_t *slot_ctx,
-                                     fd_capture_ctx_t *capture_ctx,
-                                     fd_microblock_info_t const * microblock_info,
-                                     fd_tpool_t *tpool,
-                                     ulong max_workers ) {
-  fd_microblock_hdr_t const * hdr = &microblock_info->microblock_hdr;
+// int
+// fd_runtime_microblock_execute_tpool( fd_exec_slot_ctx_t *slot_ctx,
+//                                      fd_capture_ctx_t *capture_ctx,
+//                                      fd_microblock_info_t const * microblock_info,
+//                                      fd_tpool_t *tpool,
+//                                      ulong max_workers ) {
+//   fd_microblock_hdr_t const * hdr = &microblock_info->microblock_hdr;
 
-  int res = fd_runtime_execute_txns_tpool( slot_ctx, capture_ctx, microblock_info->txn_ptrs, microblock_info->raw_txns, hdr->txn_cnt, tpool, max_workers );
-  return res;
-}
+//   int res = fd_runtime_execute_txns_tpool( slot_ctx, capture_ctx, microblock_info->txn_ptrs, microblock_info->raw_txns, hdr->txn_cnt, tpool, max_workers );
+//   return res;
+// }
 
-int fd_runtime_microblock_batch_execute_tpool(fd_exec_slot_ctx_t *slot_ctx,
-                                              fd_capture_ctx_t *capture_ctx,
-                                              fd_microblock_batch_info_t const * microblock_batch_info,
-                                              fd_tpool_t *tpool,
-                                              ulong max_workers) {
-  /* Loop across microblocks */
-  for (ulong i = 0; i < microblock_batch_info->microblock_cnt; i++) {
-    fd_microblock_info_t const * microblock_info = &microblock_batch_info->microblock_infos[i];
+// int fd_runtime_microblock_batch_execute_tpool(fd_exec_slot_ctx_t *slot_ctx,
+//                                               fd_capture_ctx_t *capture_ctx,
+//                                               fd_microblock_batch_info_t const * microblock_batch_info,
+//                                               fd_tpool_t *tpool,
+//                                               ulong max_workers) {
+//   /* Loop across microblocks */
+//   for (ulong i = 0; i < microblock_batch_info->microblock_cnt; i++) {
+//     fd_microblock_info_t const * microblock_info = &microblock_batch_info->microblock_infos[i];
 
-    // FD_LOG_DEBUG(("executing microblock - slot: %lu, mblk_idx: %lu", slot_ctx->slot_bank.slot, i));
-    fd_runtime_microblock_execute_tpool(slot_ctx, capture_ctx, microblock_info, tpool, max_workers);
-  }
+//     // FD_LOG_DEBUG(("executing microblock - slot: %lu, mblk_idx: %lu", slot_ctx->slot_bank.slot, i));
+//     fd_runtime_microblock_execute_tpool(slot_ctx, capture_ctx, microblock_info, tpool, max_workers);
+//   }
 
-  return 0;
-}
+//   return 0;
+// }
 
 // fd_runtime_block_execute
 //
@@ -1348,7 +1362,7 @@ fd_runtime_block_update_current_leader( fd_exec_slot_ctx_t * slot_ctx ) {
 }
 
 int
-fd_runtime_block_execute_prepare( fd_exec_slot_ctx_t *slot_ctx ) {
+fd_runtime_block_execute_prepare( fd_exec_slot_ctx_t * slot_ctx ) {
   // TODO: this is not part of block execution, move it.
   if( slot_ctx->slot_bank.slot != 0 ) {
     ulong slot_idx;
@@ -1428,7 +1442,7 @@ int fd_runtime_block_execute_finalize(fd_exec_slot_ctx_t *slot_ctx,
   };
 
   // Clean up sysvar cache
-  fd_slot_hashes_destroy( slot_ctx->sysvar_cache.slot_hashes, &destroy_sysvar_ctx );
+  fd_slot_hashes_destroy( slot_ctx->sysvar_cache_old.slot_hashes, &destroy_sysvar_ctx );
 
   return FD_RUNTIME_EXECUTE_SUCCESS;
 }
@@ -1474,8 +1488,14 @@ fd_runtime_block_execute_finalize_tpool( fd_exec_slot_ctx_t * slot_ctx,
   };
 
   // Clean up sysvar cache
-  fd_slot_hashes_destroy( slot_ctx->sysvar_cache.slot_hashes, &destroy_sysvar_ctx );
-
+  fd_slot_hashes_destroy( slot_ctx->sysvar_cache_old.slot_hashes, &destroy_sysvar_ctx );
+  slot_ctx->total_compute_units_requested = 0;
+  for ( fd_account_compute_table_iter_t iter = fd_account_compute_table_iter_init( slot_ctx->account_compute_table );
+        !fd_account_compute_table_iter_done( slot_ctx->account_compute_table, iter );
+        iter = fd_account_compute_table_iter_next( slot_ctx->account_compute_table, iter ) ) {
+    fd_account_compute_elem_t * e = fd_account_compute_table_iter_ele( slot_ctx->account_compute_table, iter );
+    fd_account_compute_table_remove( slot_ctx->account_compute_table, &e->key );
+  }
   return FD_RUNTIME_EXECUTE_SUCCESS;
 }
 
@@ -1505,41 +1525,41 @@ int fd_runtime_block_execute(fd_exec_slot_ctx_t *slot_ctx,
   return FD_RUNTIME_EXECUTE_SUCCESS;
 }
 
-int fd_runtime_block_execute_tpool( fd_exec_slot_ctx_t * slot_ctx,
-                                    fd_capture_ctx_t * capture_ctx,
-                                    fd_block_info_t const * block_info,
-                                    fd_tpool_t * tpool,
-                                    ulong max_workers ) {
-  if (NULL != capture_ctx)
-    fd_solcap_writer_set_slot( capture_ctx->capture, slot_ctx->slot_bank.slot );
+// int fd_runtime_block_execute_tpool( fd_exec_slot_ctx_t * slot_ctx,
+//                                     fd_capture_ctx_t * capture_ctx,
+//                                     fd_block_info_t const * block_info,
+//                                     fd_tpool_t * tpool,
+//                                     ulong max_workers ) {
+//   if (NULL != capture_ctx)
+//     fd_solcap_writer_set_slot( capture_ctx->capture, slot_ctx->slot_bank.slot );
 
-  long block_execute_time = -fd_log_wallclock();
+//   long block_execute_time = -fd_log_wallclock();
 
-  int res = fd_runtime_block_execute_prepare( slot_ctx );
-  if( res != FD_RUNTIME_EXECUTE_SUCCESS ) {
-    return res;
-  }
+//   int res = fd_runtime_block_execute_prepare( slot_ctx );
+//   if( res != FD_RUNTIME_EXECUTE_SUCCESS ) {
+//     return res;
+//   }
 
-  for( ulong i = 0; i < block_info->microblock_batch_cnt; i++ ) {
-    fd_microblock_batch_info_t const *microblock_batch_info = &block_info->microblock_batch_infos[i];
+//   for( ulong i = 0; i < block_info->microblock_batch_cnt; i++ ) {
+//     fd_microblock_batch_info_t const *microblock_batch_info = &block_info->microblock_batch_infos[i];
 
-    if( fd_runtime_microblock_batch_execute_tpool( slot_ctx, capture_ctx, microblock_batch_info, tpool, max_workers ) != 0 ) {
-      return -1;
-    }
-  }
+//     if( fd_runtime_microblock_batch_execute_tpool( slot_ctx, capture_ctx, microblock_batch_info, tpool, max_workers ) != 0 ) {
+//       return -1;
+//     }
+//   }
 
-  res = fd_runtime_block_execute_finalize_tpool( slot_ctx, capture_ctx, block_info, tpool, max_workers );
-  if( res != FD_RUNTIME_EXECUTE_SUCCESS ) {
-    return res;
-  }
+//   res = fd_runtime_block_execute_finalize_tpool( slot_ctx, capture_ctx, block_info, tpool, max_workers );
+//   if( res != FD_RUNTIME_EXECUTE_SUCCESS ) {
+//     return res;
+//   }
 
-  block_execute_time += fd_log_wallclock();
-  double block_execute_time_ms = (double)block_execute_time * 1e-6;
+//   block_execute_time += fd_log_wallclock();
+//   double block_execute_time_ms = (double)block_execute_time * 1e-6;
 
-  FD_LOG_INFO(( "executed block successfully - slot: %lu, txns: %lu, accounts: %lu, elapsed: %6.6f ms", slot_ctx->slot_bank.slot, block_info->txn_cnt, block_info->account_cnt, block_execute_time_ms ));
+//   FD_LOG_INFO(( "executed block successfully - slot: %lu, txns: %lu, accounts: %lu, elapsed: %6.6f ms", slot_ctx->slot_bank.slot, block_info->txn_cnt, block_info->account_cnt, block_execute_time_ms ));
 
-  return FD_RUNTIME_EXECUTE_SUCCESS;
-}
+//   return FD_RUNTIME_EXECUTE_SUCCESS;
+// }
 
 int fd_runtime_block_execute_tpool_v2( fd_exec_slot_ctx_t * slot_ctx,
                                        fd_capture_ctx_t * capture_ctx,
@@ -1558,12 +1578,11 @@ int fd_runtime_block_execute_tpool_v2( fd_exec_slot_ctx_t * slot_ctx,
     }
 
     ulong txn_cnt = block_info->txn_cnt;
-    fd_txn_t ** txn_ptrs = fd_scratch_alloc( alignof(fd_txn_t *), txn_cnt * sizeof(fd_txn_t *) );
-    fd_rawtxn_b_t * raw_txns = fd_scratch_alloc( alignof(fd_rawtxn_b_t), txn_cnt * sizeof(fd_rawtxn_b_t) );
+    fd_txn_p_t * txn_ptrs = fd_scratch_alloc( alignof(fd_txn_p_t), txn_cnt * sizeof(fd_txn_p_t) );
 
-    fd_runtime_block_collect_txns( block_info, raw_txns, txn_ptrs );
+    fd_runtime_block_collect_txns( block_info, txn_ptrs );
 
-    res = fd_runtime_execute_txns_in_waves_tpool( slot_ctx, capture_ctx, txn_ptrs, raw_txns, txn_cnt, tpool, max_workers );
+    res = fd_runtime_execute_txns_in_waves_tpool( slot_ctx, capture_ctx, txn_ptrs, txn_cnt, tpool, max_workers );
     if( res != FD_RUNTIME_EXECUTE_SUCCESS ) {
       return res;
     }
@@ -1659,8 +1678,10 @@ fd_runtime_poh_verify_task( void *tpool,
 
     /* Loop across transactions */
     for (ulong txn_idx = 0; txn_idx < txn_cnt; txn_idx++) {
-      fd_txn_t const *txn = microblock_info->txn_ptrs[txn_idx];
-      fd_rawtxn_b_t const *raw_txn = &microblock_info->raw_txns[txn_idx];
+      fd_txn_p_t * txn_p = &microblock_info->txns[txn_idx];
+
+      fd_txn_t const *txn = (fd_txn_t const *) txn_p->_;
+      fd_rawtxn_b_t const raw_txn[1] = {{.raw = txn_p->payload, .txn_sz = (ushort)txn_p->payload_sz}};
 
       /* Loop across signatures */
       fd_ed25519_sig_t const *sigs = (fd_ed25519_sig_t const *)((ulong)raw_txn->raw + (ulong)txn->signature_off);
@@ -1714,8 +1735,10 @@ fd_runtime_poh_verify_wide_task( void *tpool,
 
     /* Loop across transactions */
     for (ulong txn_idx = 0; txn_idx < txn_cnt; txn_idx++) {
-      fd_txn_t const *txn = microblock_info->txn_ptrs[txn_idx];
-      fd_rawtxn_b_t const *raw_txn = &microblock_info->raw_txns[txn_idx];
+      fd_txn_p_t * txn_p = &microblock_info->txns[txn_idx];
+
+      fd_txn_t const *txn = (fd_txn_t const *) txn_p->_;
+      fd_rawtxn_b_t const raw_txn[1] = {{.raw = txn_p->payload, .txn_sz = (ushort)txn_p->payload_sz}};
 
       /* Loop across signatures */
       fd_ed25519_sig_t const *sigs = (fd_ed25519_sig_t const *)((ulong)raw_txn->raw + (ulong)txn->signature_off);
@@ -1799,7 +1822,8 @@ int fd_runtime_microblock_wide_verify(fd_microblock_info_t const *microblock_inf
     ulong leaf_cnt = 0;
     for (ulong txn_idx = 0; txn_idx < txn_cnt; txn_idx++)
     {
-      fd_txn_t const *txn = microblock_info->txn_ptrs[txn_idx];
+      fd_txn_p_t * txn_p = &microblock_info->txns[txn_idx];
+      fd_txn_t const *txn = (fd_txn_t const *) txn_p->_;
       leaf_cnt += txn->signature_cnt;
     }
 
@@ -1813,8 +1837,10 @@ int fd_runtime_microblock_wide_verify(fd_microblock_info_t const *microblock_inf
 
     /* Loop acro ss transactions */
     for( ulong txn_idx = 0; txn_idx < txn_cnt; txn_idx++ ) {
-      fd_txn_t const *txn = microblock_info->txn_ptrs[txn_idx];
-      fd_rawtxn_b_t const *raw_txn = &microblock_info->raw_txns[txn_idx];
+      fd_txn_p_t * txn_p = &microblock_info->txns[txn_idx];
+
+      fd_txn_t const *txn = (fd_txn_t const *) txn_p->_;
+      fd_rawtxn_b_t const raw_txn[1] = {{.raw = txn_p->payload, .txn_sz = (ushort)txn_p->payload_sz}};
 
       /* Loop across signatures */
       fd_ed25519_sig_t const *sigs = (fd_ed25519_sig_t const *)((ulong)raw_txn->raw + (ulong)txn->signature_off);
@@ -1860,8 +1886,10 @@ int fd_runtime_microblock_verify(fd_microblock_info_t const *microblock_info,
 
     /* Loop across transactions */
     for (ulong txn_idx = 0; txn_idx < txn_cnt; txn_idx++) {
-      fd_txn_t const *txn = microblock_info->txn_ptrs[txn_idx];
-      fd_rawtxn_b_t const *raw_txn = &microblock_info->raw_txns[txn_idx];
+      fd_txn_p_t * txn_p = &microblock_info->txns[txn_idx];
+
+      fd_txn_t const *txn = (fd_txn_t const *) txn_p->_;
+      fd_rawtxn_b_t const raw_txn[1] = {{.raw = txn_p->payload, .txn_sz = (ushort)txn_p->payload_sz}};
 
       /* Loop across signatures */
       fd_ed25519_sig_t const *sigs = (fd_ed25519_sig_t const *)((ulong)raw_txn->raw + (ulong)txn->signature_off);
@@ -2005,7 +2033,7 @@ fd_runtime_block_eval_tpool(fd_exec_slot_ctx_t *slot_ctx,
 
   // FIXME: better way of using starting slot
   if( FD_UNLIKELY( FD_RUNTIME_EXECUTE_SUCCESS != ret ) ) {
-    FD_LOG_WARNING(("execution failure, code %lu", ret));
+    FD_LOG_WARNING(("execution failure, code %d", ret));
     /* Skip over slot next time */
     slot_ctx->slot_bank.slot = slot+1;
     return 0;
@@ -2097,7 +2125,7 @@ fd_runtime_txn_lamports_per_signature( fd_exec_txn_ctx_t * txn_ctx,
   // why is asan not detecting access to uninitialized memory here?!
   fd_nonce_state_versions_t state;
   int err;
-  if ((NULL != txn_descriptor) && fd_load_nonce_account(txn_ctx, txn_descriptor, txn_raw, &state, &err)) {
+  if ((NULL != txn_descriptor) && fd_load_nonce_account(txn_ctx, &state, txn_ctx->valloc, &err)) {
     if (state.inner.current.discriminant == fd_nonce_state_enum_initialized)
       return state.inner.current.inner.initialized.fee_calculator.lamports_per_signature;
   }
@@ -2621,7 +2649,7 @@ void fd_runtime_distribute_rent_to_validators( fd_exec_slot_ctx_t * slot_ctx,
         if( prevent_rent_fix | validate_fee_collector_account) {
           // https://github.com/solana-labs/solana/blob/8c5b5f18be77737f0913355f17ddba81f14d5824/accounts-db/src/account_rent_state.rs#L39
 
-          ulong minbal = fd_rent_exempt_minimum_balance2(slot_ctx->sysvar_cache.rent, rec->const_meta->dlen);
+          ulong minbal = fd_rent_exempt_minimum_balance2(slot_ctx->sysvar_cache_old.rent, rec->const_meta->dlen);
           if( rec->const_meta->info.lamports + rent_to_be_paid < minbal ) {
             FD_LOG_WARNING(("cannot pay a rent paying account (%32J)", &pubkey));
             leftover_lamports += rent_to_be_paid;
@@ -2711,7 +2739,7 @@ fd_runtime_freeze( fd_exec_slot_ctx_t * slot_ctx ) {
           break;
         }
 
-        uchar not_exempt = fd_rent_exempt_minimum_balance2( slot_ctx->sysvar_cache.rent, rec->meta->dlen) > rec->meta->info.lamports;
+        uchar not_exempt = fd_rent_exempt_minimum_balance2( slot_ctx->sysvar_cache_old.rent, rec->meta->dlen) > rec->meta->info.lamports;
         if (not_exempt) {
           FD_LOG_WARNING(("fd_runtime_freeze: burn %lu due to non-rent-exempt account", slot_ctx->slot_bank.collected_fees ));
           slot_ctx->slot_bank.capitalization = fd_ulong_sat_sub(slot_ctx->slot_bank.capitalization, slot_ctx->slot_bank.collected_fees);
@@ -2937,7 +2965,7 @@ int fd_global_import_solana_manifest(fd_exec_slot_ctx_t *slot_ctx,
   slot_bank->prev_slot = oldbank->parent_slot;
   fd_memcpy(&slot_bank->banks_hash, &oldbank->hash, sizeof(oldbank->hash));
   fd_memcpy(&slot_bank->fee_rate_governor, &oldbank->fee_rate_governor, sizeof(oldbank->fee_rate_governor));
-  FD_LOG_WARNING(("POOP: %lu %lu",oldbank->fee_calculator.lamports_per_signature, manifest->lamports_per_signature ));
+
   slot_bank->lamports_per_signature = oldbank->fee_calculator.lamports_per_signature;
   if (oldbank->hashes_per_tick)
     epoch_bank->hashes_per_tick = *oldbank->hashes_per_tick;
@@ -3388,7 +3416,7 @@ void fd_update_epoch_stakes( fd_exec_slot_ctx_t * slot_ctx ) {
 /* process for the start of a new epoch */
 void fd_process_new_epoch(
     fd_exec_slot_ctx_t *slot_ctx,
-    ulong parent_epoch)
+    ulong parent_epoch )
 {
   ulong slot;
   ulong epoch = fd_slot_to_epoch(&slot_ctx->epoch_ctx->epoch_bank.epoch_schedule, slot_ctx->slot_bank.slot, &slot);
@@ -3435,12 +3463,9 @@ void fd_process_new_epoch(
 
   fd_update_stake_delegations( slot_ctx );
 
-  fd_stake_history_t history;
-  fd_sysvar_stake_history_read( &history, slot_ctx, &slot_ctx->valloc );
-  refresh_vote_accounts( slot_ctx, &history );
-  fd_bincode_destroy_ctx_t ctx;
-  ctx.valloc  = slot_ctx->valloc;
-  fd_stake_history_destroy( &history, &ctx );
+  fd_stake_history_t const * history = fd_sysvar_cache_stake_history( slot_ctx->sysvar_cache );
+    if( FD_UNLIKELY( !history ) ) FD_LOG_ERR(( "StakeHistory sysvar is missing from sysvar cache" ));
+  refresh_vote_accounts( slot_ctx, history );
 
   fd_calculate_epoch_accounts_hash_values( slot_ctx );
   FD_LOG_WARNING(("Leader schedule epoch %lu", fd_slot_to_leader_schedule_epoch( &slot_ctx->epoch_ctx->epoch_bank.epoch_schedule, slot_ctx->slot_bank.slot)));
@@ -3602,7 +3627,7 @@ fd_runtime_replay( fd_runtime_ctx_t * state, fd_runtime_args_t * args ) {
       continue;
     }
     uchar * val = fd_blockstore_block_data_laddr( blockstore, blk );
-    ulong   sz  = blk->sz;
+    ulong   sz  = blk->data_sz;
     fd_blockstore_end_read( blockstore );
 
     ulong blk_txn_cnt = 0;
@@ -3687,20 +3712,22 @@ int fd_runtime_sysvar_cache_load( fd_exec_slot_ctx_t * slot_ctx ) {
   // if (FD_UNLIKELY(!slot_ctx->funk_txn)) return -1;
   /* TODO check valloc */
 
-  fd_slot_hashes_new( slot_ctx->sysvar_cache.slot_hashes );
-  if( FD_UNLIKELY( !fd_sysvar_slot_hashes_read( slot_ctx->sysvar_cache.slot_hashes, slot_ctx ) ) ) {
+  fd_sysvar_cache_restore( slot_ctx->sysvar_cache, slot_ctx->acc_mgr, slot_ctx->funk_txn );
+
+  fd_slot_hashes_new( slot_ctx->sysvar_cache_old.slot_hashes );
+  if( FD_UNLIKELY( !fd_sysvar_slot_hashes_read( slot_ctx->sysvar_cache_old.slot_hashes, slot_ctx ) ) ) {
     FD_LOG_WARNING(("reading sysvars failed"));
     return -1;
   }
 
-  fd_rent_new( slot_ctx->sysvar_cache.rent );
-  if( FD_UNLIKELY( !fd_sysvar_rent_read( slot_ctx->sysvar_cache.rent, slot_ctx ) ) ) {
+  fd_rent_new( slot_ctx->sysvar_cache_old.rent );
+  if( FD_UNLIKELY( !fd_sysvar_rent_read( slot_ctx->sysvar_cache_old.rent, slot_ctx ) ) ) {
     FD_LOG_WARNING(("reading sysvars failed"));
     return -1;
   }
 
-  fd_sol_sysvar_clock_new( slot_ctx->sysvar_cache.clock );
-  if( FD_UNLIKELY( !fd_sysvar_clock_read( slot_ctx->sysvar_cache.clock, slot_ctx ) ) ) {
+  fd_sol_sysvar_clock_new( slot_ctx->sysvar_cache_old.clock );
+  if( FD_UNLIKELY( !fd_sysvar_clock_read( slot_ctx->sysvar_cache_old.clock, slot_ctx ) ) ) {
     FD_LOG_WARNING(("reading sysvars failed"));
     return -1;
   }

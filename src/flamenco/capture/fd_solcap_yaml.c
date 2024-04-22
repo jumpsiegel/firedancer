@@ -8,12 +8,6 @@
 #include <errno.h>
 #include <stdio.h>
 
-<<<<<<< HEAD
-=======
-#pragma GCC diagnostic ignored "-Wformat"
-#pragma GCC diagnostic ignored "-Wformat-extra-args"
-
->>>>>>> main
 static int
 usage( void ) {
   fprintf( stderr,
@@ -345,13 +339,8 @@ process_bank( fd_solcap_chunk_t const * chunk,
   if ( verbose < 3 || !has_txns )
     printf( "- slot: %lu\n", meta.slot );
 
-<<<<<<< HEAD
   printf( 
       "  - bank_hash:          '%32J'\n", 
-=======
-  printf(
-      "  - bank_hash:          '%32J'\n",
->>>>>>> main
       meta.bank_hash );
 
   if( verbose>=1 ) {
@@ -431,11 +420,7 @@ if ( verbose < 3 )
 
   /* Write YAML */
   if ( prev_slot == 0 || prev_slot != meta.slot ) {
-<<<<<<< HEAD
     printf( 
-=======
-    printf(
->>>>>>> main
       "- slot: %lu\n"
       "  - txns:\n", meta.slot
     );

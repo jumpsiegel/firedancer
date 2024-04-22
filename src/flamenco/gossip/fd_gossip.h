@@ -69,6 +69,13 @@ int fd_gossip_update_repair_addr( fd_gossip_t * glob, const fd_gossip_peer_addr_
 int
 fd_gossip_update_tvu_addr( fd_gossip_t * glob, const fd_gossip_peer_addr_t * tvu, const fd_gossip_peer_addr_t * tvu_fwd );
 
+/* Update the tpu addr */
+int
+fd_gossip_update_tpu_addr( fd_gossip_t * glob, const fd_gossip_peer_addr_t * tpu );
+
+/* Update the tpu vote addr */
+int fd_gossip_update_tpu_vote_addr( fd_gossip_t * glob, const fd_gossip_peer_addr_t * tpu_vote );
+
 /* Set the shred version (after receiving a contact info msg) */
 void fd_gossip_set_shred_version( fd_gossip_t * glob, ushort shred_version );
 
@@ -97,5 +104,7 @@ int fd_gossip_recv_packet( fd_gossip_t * glob, uchar const * msg, ulong msglen, 
 const char * fd_gossip_addr_str( char * dst, ulong dstlen, fd_gossip_peer_addr_t const * src );
 
 ushort fd_gossip_get_shred_version( fd_gossip_t const * glob );
+
+void fd_gossip_set_stake_weights( fd_gossip_t * gossip, fd_stake_weight_t const * stake_weights, ulong stake_weights_cnt );
 
 #endif /* HEADER_fd_src_flamenco_gossip_fd_gossip_h */

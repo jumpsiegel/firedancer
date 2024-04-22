@@ -41,15 +41,9 @@ typedef union fd_features fd_features_t;
    byte offset in fd_features_t. */
 
 struct fd_feature_id {
-<<<<<<< HEAD
-  ulong       index;  /* index of feature in fd_features_t */
-  fd_pubkey_t id;     /* pubkey of feature */
-  uchar       default_activated; /* whether the feature is activated by default or not. features which have been removed by Solana are activated by default. */
-=======
   ulong       index;          /* index of feature in fd_features_t */
   fd_pubkey_t id;             /* pubkey of feature */
   uint        hardcoded : 1;  /* is always enabled in Firedancer? */
->>>>>>> main
 };
 typedef struct fd_feature_id fd_feature_id_t;
 
@@ -69,28 +63,21 @@ fd_features_disable_all( fd_features_t * f );
 void
 fd_features_enable_all( fd_features_t * );
 
-<<<<<<< HEAD
-/* fd_features_enable_defaults enables all features that are activated
-   by default (those in the hard-coded list in gen_features.py) */
-void
-fd_features_enable_defaults( fd_features_t * );
-=======
 /* fd_features_enable_hardcoded enables all features marked as "hard
    coded".  These are features that are baked into the current version
    of the Firedancer software and can't be disabled. */
 
 void
 fd_features_enable_hardcoded( fd_features_t * );
->>>>>>> main
 
 /* fd_feature_iter_{...} is an iterator-style API over all supported
    features in this version of Firedancer.  Usage:
 
      for( fd_feature_id_t const * id = fd_feature_iter_init();
                                       !fd_feature_iter_done( id );
-                                  id = fd_feature_iter_next( id ) ) {
+                                  id = fd_feature_iter_next( id ) ) {{
        ...
-     } */
+     }} */
 
 static inline fd_feature_id_t const *
 fd_feature_iter_init( void ) {

@@ -225,14 +225,13 @@ int fd_executor_run_test(
   fd_exec_epoch_ctx_t * epoch_ctx = fd_exec_epoch_ctx_join( fd_exec_epoch_ctx_new( epoch_ctx_mem ) );
 
   uchar * slot_ctx_mem = (uchar *)fd_alloca_check( FD_EXEC_SLOT_CTX_ALIGN, FD_EXEC_SLOT_CTX_FOOTPRINT );
-  fd_exec_slot_ctx_t * slot_ctx = fd_exec_slot_ctx_join( fd_exec_slot_ctx_new( slot_ctx_mem ) );
+  fd_exec_slot_ctx_t * slot_ctx = fd_exec_slot_ctx_join( fd_exec_slot_ctx_new( slot_ctx_mem, suite->valloc ) );
   slot_ctx->epoch_ctx = epoch_ctx;
 
   if ( FD_UNLIKELY( NULL == slot_ctx ) )
     FD_LOG_ERR(( "failed to join a slot context" ));
 
   int ret = 0;
-  slot_ctx->valloc     = suite->valloc;
 
   epoch_ctx->epoch_bank.rent.lamports_per_uint8_year = 3480;
   epoch_ctx->epoch_bank.rent.exemption_threshold = 2;
@@ -283,7 +282,7 @@ int fd_executor_run_test(
       rec->meta->info.lamports   = test->accs[ i ].lamports;
       rec->meta->info.rent_epoch = test->accs[ i ].rent_epoch;
       memcpy( rec->meta->info.owner, test->accs[ i ].owner.uc, 32UL );
-      rec->meta->info.executable = (char)test->accs[ i ].executable;
+      rec->meta->info.executable = !!test->accs[ i ].executable;
       if( test->accs[ i ].data_len )
         memcpy( rec->data, test->accs[ i ].data, test->accs[ i ].data_len );
 
@@ -324,13 +323,17 @@ int fd_executor_run_test(
     if( 0!=strcmp( test->sysvar_cache.slot_history, "" ) )
       load_sysvar_cache( slot_ctx, fd_sysvar_slot_history_id.key, test->sysvar_cache.slot_history );
 
+    uchar * sysvar_cache_mem = (uchar *)aligned_alloc( fd_sysvar_cache_align(), fd_sysvar_cache_footprint() );
+    slot_ctx->sysvar_cache = fd_sysvar_cache_new( sysvar_cache_mem, slot_ctx->valloc );
+    fd_sysvar_cache_restore( slot_ctx->sysvar_cache, slot_ctx->acc_mgr, slot_ctx->funk_txn );
+
     /* Restore slot number
        TODO The slot number should not be in bank */
     do {
       fd_sol_sysvar_clock_t clock[1];
       if( fd_sysvar_clock_read( clock, slot_ctx ) ) {
         slot_ctx->slot_bank.slot = clock->slot;
-        *slot_ctx->sysvar_cache.clock = *clock;
+        *slot_ctx->sysvar_cache_old.clock = *clock;
       }
     } while(0);
 
@@ -339,7 +342,7 @@ int fd_executor_run_test(
       fd_rent_t rent[1];
       fd_rent_new(rent);
       if( fd_sysvar_rent_read( rent, slot_ctx ) ) {
-        *slot_ctx->sysvar_cache.rent = *rent;
+        *slot_ctx->sysvar_cache_old.rent = *rent;
       }
     } while(0);
 
@@ -349,7 +352,7 @@ int fd_executor_run_test(
     do {
       fd_slot_hashes_t slot_hashes[1];
       if( fd_sysvar_slot_hashes_read( slot_hashes, slot_ctx ) )
-        *slot_ctx->sysvar_cache.slot_hashes = *slot_hashes;
+        *slot_ctx->sysvar_cache_old.slot_hashes = *slot_hashes;
     } while(0);
 
 
@@ -383,7 +386,7 @@ int fd_executor_run_test(
     txn_ctx.valloc          = slot_ctx->valloc;
     txn_ctx.funk_txn        = slot_ctx->funk_txn;
     txn_ctx.txn_descriptor  = txn_descriptor;
-    txn_ctx._txn_raw        = &raw_txn_b;
+    fd_memcpy( txn_ctx._txn_raw, &raw_txn_b, sizeof(fd_rawtxn_b_t) );
     txn_ctx.instr_stack_sz = 0;
     txn_ctx.compute_meter   = 200000;
 
@@ -571,6 +574,7 @@ int fd_executor_run_test(
 
   /* Revert the Funk transaction */
 fd_executor_run_cleanup:
+  free( fd_sysvar_cache_delete( slot_ctx->sysvar_cache ) );
   fd_funk_txn_cancel( suite->funk, slot_ctx->funk_txn, 0 );
   fd_bincode_destroy_ctx_t destroy_ctx = { .valloc = slot_ctx->valloc };
   fd_slot_bank_destroy(&slot_ctx->slot_bank, &destroy_ctx);

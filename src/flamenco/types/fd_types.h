@@ -96,11 +96,52 @@ typedef struct fd_hash_hash_age_pair_off fd_hash_hash_age_pair_off_t;
 #define FD_HASH_HASH_AGE_PAIR_OFF_ALIGN (8UL)
 
 /* Encoded Size: Dynamic */
-struct __attribute__((aligned(8UL))) fd_block_hash_queue {
+struct __attribute__((aligned(8UL))) fd_block_hash_vec {
   ulong last_hash_index;
   fd_hash_t* last_hash;
   ulong ages_len;
   fd_hash_hash_age_pair_t* ages;
+  ulong max_age;
+};
+typedef struct fd_block_hash_vec fd_block_hash_vec_t;
+#define FD_BLOCK_HASH_VEC_FOOTPRINT sizeof(fd_block_hash_vec_t)
+#define FD_BLOCK_HASH_VEC_ALIGN (8UL)
+
+struct __attribute__((aligned(8UL))) fd_block_hash_vec_off {
+  uint last_hash_index_off;
+  uint last_hash_off;
+  uint ages_off;
+  uint max_age_off;
+};
+typedef struct fd_block_hash_vec_off fd_block_hash_vec_off_t;
+#define FD_BLOCK_HASH_VEC_OFF_FOOTPRINT sizeof(fd_block_hash_vec_off_t)
+#define FD_BLOCK_HASH_VEC_OFF_ALIGN (8UL)
+
+typedef struct fd_hash_hash_age_pair_t_mapnode fd_hash_hash_age_pair_t_mapnode_t;
+#define REDBLK_T fd_hash_hash_age_pair_t_mapnode_t
+#define REDBLK_NAME fd_hash_hash_age_pair_t_map
+#define REDBLK_IMPL_STYLE 1
+#include "../../util/tmpl/fd_redblack.c"
+#undef REDBLK_T
+#undef REDBLK_NAME
+struct fd_hash_hash_age_pair_t_mapnode {
+    fd_hash_hash_age_pair_t elem;
+    ulong redblack_parent;
+    ulong redblack_left;
+    ulong redblack_right;
+    int redblack_color;
+};
+static inline fd_hash_hash_age_pair_t_mapnode_t *
+fd_hash_hash_age_pair_t_map_alloc( fd_valloc_t valloc, ulong len ) {
+  void * mem = fd_valloc_malloc( valloc, fd_hash_hash_age_pair_t_map_align(), fd_hash_hash_age_pair_t_map_footprint(len));
+  return fd_hash_hash_age_pair_t_map_join(fd_hash_hash_age_pair_t_map_new(mem, len));
+}
+/* Encoded Size: Dynamic */
+struct __attribute__((aligned(8UL))) fd_block_hash_queue {
+  ulong last_hash_index;
+  fd_hash_t* last_hash;
+  fd_hash_hash_age_pair_t_mapnode_t * ages_pool;
+  fd_hash_hash_age_pair_t_mapnode_t * ages_root;
   ulong max_age;
 };
 typedef struct fd_block_hash_queue fd_block_hash_queue_t;
@@ -384,8 +425,8 @@ struct __attribute__((packed)) fd_solana_account_meta {
   ulong lamports;
   ulong rent_epoch;
   uchar owner[32];
-  char executable;
-  char padding[7];
+  uchar executable;
+  uchar padding[7];
 };
 typedef struct fd_solana_account_meta fd_solana_account_meta_t;
 #define FD_SOLANA_ACCOUNT_META_FOOTPRINT sizeof(fd_solana_account_meta_t)
@@ -847,7 +888,7 @@ typedef struct fd_unused_accounts_off fd_unused_accounts_off_t;
 /* https://github.com/solana-labs/solana/blob/88aeaa82a856fc807234e7da0b31b89f2dc0e091/runtime/src/bank.rs#L967 */
 /* Encoded Size: Dynamic */
 struct __attribute__((aligned(16UL))) fd_deserializable_versioned_bank {
-  fd_block_hash_queue_t blockhash_queue;
+  fd_block_hash_vec_t blockhash_queue;
   ulong ancestors_len;
   fd_slot_pair_t* ancestors;
   fd_hash_t hash;
@@ -880,7 +921,7 @@ struct __attribute__((aligned(16UL))) fd_deserializable_versioned_bank {
   fd_unused_accounts_t unused_accounts;
   ulong epoch_stakes_len;
   fd_epoch_epoch_stakes_pair_t* epoch_stakes;
-  char is_delta;
+  uchar is_delta;
 };
 typedef struct fd_deserializable_versioned_bank fd_deserializable_versioned_bank_t;
 #define FD_DESERIALIZABLE_VERSIONED_BANK_FOOTPRINT sizeof(fd_deserializable_versioned_bank_t)
@@ -1196,7 +1237,8 @@ typedef struct fd_rust_duration_off fd_rust_duration_off_t;
 struct __attribute__((aligned(8UL))) fd_poh_config {
   fd_rust_duration_t target_tick_duration;
   ulong* target_tick_count;
-  ulong* hashes_per_tick;
+  ulong hashes_per_tick;
+  uchar has_hashes_per_tick;
 };
 typedef struct fd_poh_config fd_poh_config_t;
 #define FD_POH_CONFIG_FOOTPRINT sizeof(fd_poh_config_t)
@@ -1488,7 +1530,6 @@ typedef struct fd_vote_prior_voters_off fd_vote_prior_voters_off_t;
 struct __attribute__((aligned(8UL))) fd_vote_prior_voters_0_23_5 {
   fd_vote_prior_voter_0_23_5_t buf[32];
   ulong idx;
-  uchar is_empty;
 };
 typedef struct fd_vote_prior_voters_0_23_5 fd_vote_prior_voters_0_23_5_t;
 #define FD_VOTE_PRIOR_VOTERS_0_23_5_FOOTPRINT sizeof(fd_vote_prior_voters_0_23_5_t)
@@ -1497,7 +1538,6 @@ typedef struct fd_vote_prior_voters_0_23_5 fd_vote_prior_voters_0_23_5_t;
 struct __attribute__((aligned(8UL))) fd_vote_prior_voters_0_23_5_off {
   uint buf_off;
   uint idx_off;
-  uint is_empty_off;
 };
 typedef struct fd_vote_prior_voters_0_23_5_off fd_vote_prior_voters_0_23_5_off_t;
 #define FD_VOTE_PRIOR_VOTERS_0_23_5_OFF_FOOTPRINT sizeof(fd_vote_prior_voters_0_23_5_off_t)
@@ -1523,7 +1563,7 @@ typedef struct fd_landed_vote_off fd_landed_vote_off_t;
 
 #define DEQUE_NAME deq_fd_vote_lockout_t
 #define DEQUE_T fd_vote_lockout_t
-#define DEQUE_MAX 100
+#define DEQUE_MAX 1228
 #include "../../util/tmpl/fd_deque.c"
 #undef DEQUE_NAME
 #undef DEQUE_T
@@ -1555,7 +1595,8 @@ struct __attribute__((aligned(8UL))) fd_vote_state_0_23_5 {
   fd_pubkey_t authorized_withdrawer;
   uchar commission;
   fd_vote_lockout_t * votes;
-  fd_option_slot_t root_slot;
+  ulong root_slot;
+  uchar has_root_slot;
   fd_vote_epoch_credits_t * epoch_credits;
   fd_vote_block_timestamp_t last_timestamp;
 };
@@ -1630,7 +1671,8 @@ struct __attribute__((aligned(8UL))) fd_vote_state_1_14_11 {
   fd_pubkey_t authorized_withdrawer;
   uchar commission;
   fd_vote_lockout_t * votes;
-  fd_option_slot_t root_slot;
+  ulong root_slot;
+  uchar has_root_slot;
   fd_vote_authorized_voters_t authorized_voters;
   fd_vote_prior_voters_t prior_voters;
   fd_vote_epoch_credits_t * epoch_credits;
@@ -1674,7 +1716,8 @@ struct __attribute__((aligned(8UL))) fd_vote_state {
   fd_pubkey_t authorized_withdrawer;
   uchar commission;
   fd_landed_vote_t * votes;
-  fd_option_slot_t root_slot;
+  ulong root_slot;
+  uchar has_root_slot;
   fd_vote_authorized_voters_t authorized_voters;
   fd_vote_prior_voters_t prior_voters;
   fd_vote_epoch_credits_t * epoch_credits;
@@ -1735,7 +1778,8 @@ typedef struct fd_vote_state_versioned_off fd_vote_state_versioned_off_t;
 /* Encoded Size: Dynamic */
 struct __attribute__((aligned(8UL))) fd_vote_state_update {
   fd_vote_lockout_t * lockouts;
-  fd_option_slot_t root;
+  ulong root;
+  uchar has_root;
   fd_hash_t hash;
   ulong* timestamp;
 };
@@ -2240,6 +2284,7 @@ struct __attribute__((aligned(16UL))) fd_slot_bank {
   ulong lamports_per_signature;
   ulong transaction_count;
   uchar lthash[2048];
+  fd_block_hash_queue_t block_hash_queue;
 };
 typedef struct fd_slot_bank fd_slot_bank_t;
 #define FD_SLOT_BANK_FOOTPRINT sizeof(fd_slot_bank_t)
@@ -2266,6 +2311,7 @@ struct __attribute__((aligned(16UL))) fd_slot_bank_off {
   uint lamports_per_signature_off;
   uint transaction_count_off;
   uint lthash_off;
+  uint block_hash_queue_off;
 };
 typedef struct fd_slot_bank_off fd_slot_bank_off_t;
 #define FD_SLOT_BANK_OFF_FOOTPRINT sizeof(fd_slot_bank_off_t)
@@ -2419,7 +2465,8 @@ typedef struct fd_update_vote_state_switch_off fd_update_vote_state_switch_off_t
 struct __attribute__((aligned(8UL))) fd_vote_authorize_with_seed_args {
   fd_vote_authorize_t authorization_type;
   fd_pubkey_t current_authority_derived_key_owner;
-  char* current_authority_derived_key_seed;
+  ulong current_authority_derived_key_seed_len;
+  uchar* current_authority_derived_key_seed;
   fd_pubkey_t new_authority;
 };
 typedef struct fd_vote_authorize_with_seed_args fd_vote_authorize_with_seed_args_t;
@@ -2441,7 +2488,8 @@ typedef struct fd_vote_authorize_with_seed_args_off fd_vote_authorize_with_seed_
 struct __attribute__((aligned(8UL))) fd_vote_authorize_checked_with_seed_args {
   fd_vote_authorize_t authorization_type;
   fd_pubkey_t current_authority_derived_key_owner;
-  char* current_authority_derived_key_seed;
+  ulong current_authority_derived_key_seed_len;
+  uchar* current_authority_derived_key_seed;
 };
 typedef struct fd_vote_authorize_checked_with_seed_args fd_vote_authorize_checked_with_seed_args_t;
 #define FD_VOTE_AUTHORIZE_CHECKED_WITH_SEED_ARGS_FOOTPRINT sizeof(fd_vote_authorize_checked_with_seed_args_t)
@@ -2743,7 +2791,8 @@ typedef struct fd_stake_instruction_authorize_off fd_stake_instruction_authorize
 struct __attribute__((aligned(8UL))) fd_authorize_with_seed_args {
   fd_pubkey_t new_authorized_pubkey;
   fd_stake_authorize_t stake_authorize;
-  char* authority_seed;
+  ulong authority_seed_len;
+  uchar* authority_seed;
   fd_pubkey_t authority_owner;
 };
 typedef struct fd_authorize_with_seed_args fd_authorize_with_seed_args_t;
@@ -2764,7 +2813,8 @@ typedef struct fd_authorize_with_seed_args_off fd_authorize_with_seed_args_off_t
 /* Encoded Size: Dynamic */
 struct __attribute__((aligned(8UL))) fd_authorize_checked_with_seed_args {
   fd_stake_authorize_t stake_authorize;
-  char* authority_seed;
+  ulong authority_seed_len;
+  uchar* authority_seed;
   fd_pubkey_t authority_owner;
 };
 typedef struct fd_authorize_checked_with_seed_args fd_authorize_checked_with_seed_args_t;
@@ -4336,6 +4386,18 @@ void fd_hash_hash_age_pair_walk(void * w, fd_hash_hash_age_pair_t const * self, 
 ulong fd_hash_hash_age_pair_size(fd_hash_hash_age_pair_t const * self);
 ulong fd_hash_hash_age_pair_footprint( void );
 ulong fd_hash_hash_age_pair_align( void );
+
+void fd_block_hash_vec_new(fd_block_hash_vec_t* self);
+int fd_block_hash_vec_decode(fd_block_hash_vec_t* self, fd_bincode_decode_ctx_t * ctx);
+int fd_block_hash_vec_decode_preflight(fd_bincode_decode_ctx_t * ctx);
+void fd_block_hash_vec_decode_unsafe(fd_block_hash_vec_t* self, fd_bincode_decode_ctx_t * ctx);
+int fd_block_hash_vec_decode_offsets(fd_block_hash_vec_off_t* self, fd_bincode_decode_ctx_t * ctx);
+int fd_block_hash_vec_encode(fd_block_hash_vec_t const * self, fd_bincode_encode_ctx_t * ctx);
+void fd_block_hash_vec_destroy(fd_block_hash_vec_t* self, fd_bincode_destroy_ctx_t * ctx);
+void fd_block_hash_vec_walk(void * w, fd_block_hash_vec_t const * self, fd_types_walk_fn_t fun, const char *name, uint level);
+ulong fd_block_hash_vec_size(fd_block_hash_vec_t const * self);
+ulong fd_block_hash_vec_footprint( void );
+ulong fd_block_hash_vec_align( void );
 
 void fd_block_hash_queue_new(fd_block_hash_queue_t* self);
 int fd_block_hash_queue_decode(fd_block_hash_queue_t* self, fd_bincode_decode_ctx_t * ctx);

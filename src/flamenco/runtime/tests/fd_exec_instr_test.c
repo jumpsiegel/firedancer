@@ -1,5 +1,4 @@
 #include "fd_exec_test.pb.h"
-#undef FD_SCRATCH_USE_HANDHOLDING
 #define FD_SCRATCH_USE_HANDHOLDING 1
 #include "fd_exec_instr_test.h"
 #include "../fd_acc_mgr.h"
@@ -87,29 +86,14 @@ fd_exec_instr_test_runner_delete( fd_exec_instr_test_runner_t * runner ) {
   return runner;
 }
 
-<<<<<<< HEAD
-// ############################################################################################################################################
-// TODO: UNCOMMENT AFTER THE SYSVAR CACHE CHANGES HAVE BEEN MERGED INTO THE PRIVATE REPO.
-//
-// static int
-// fd_double_is_normal( double x ) {
-// 	union {
-//     double d;
-//     ulong  ul;
-//   } u = { .d = x };
-//   return !( (!(u.ul>>52 & 0x7ff)) & (u.ul<<1) );
-// }
-// ############################################################################################################################################
-=======
 static int
 fd_double_is_normal( double x ) {
 	union {
     double d;
     ulong  ul;
   } u = { .d = x };
-  return !( (!(u.ul>>52 & 0x7ff)) && (u.ul<<1) );
+  return !( (!(u.ul>>52 & 0x7ff)) & (u.ul<<1) );
 }
->>>>>>> main
 
 static int
 _load_account( fd_borrowed_account_t *           acc,
@@ -179,7 +163,7 @@ _context_create( fd_exec_instr_test_runner_t *        runner,
   uchar *               txn_ctx_mem   = fd_scratch_alloc( FD_EXEC_TXN_CTX_ALIGN,   FD_EXEC_TXN_CTX_FOOTPRINT   );
 
   fd_exec_epoch_ctx_t * epoch_ctx     = fd_exec_epoch_ctx_join( fd_exec_epoch_ctx_new( epoch_ctx_mem ) );
-  fd_exec_slot_ctx_t *  slot_ctx      = fd_exec_slot_ctx_join ( fd_exec_slot_ctx_new ( slot_ctx_mem  ) );
+  fd_exec_slot_ctx_t *  slot_ctx      = fd_exec_slot_ctx_join ( fd_exec_slot_ctx_new ( slot_ctx_mem, fd_scratch_virtual() ) );
   fd_exec_txn_ctx_t *   txn_ctx       = fd_exec_txn_ctx_join  ( fd_exec_txn_ctx_new  ( txn_ctx_mem   ) );
 
   epoch_ctx->valloc = fd_scratch_virtual();
@@ -202,7 +186,7 @@ _context_create( fd_exec_instr_test_runner_t *        runner,
     ulong                   prefix = feature_set->features[j];
     fd_feature_id_t const * id     = fd_feature_id_query( prefix );
     if( FD_UNLIKELY( !id ) ) {
-      FD_LOG_CRIT(( "unsupported feature ID 0x%016lx", prefix ));
+      FD_LOG_WARNING(( "unsupported feature ID 0x%016lx", prefix ));
       return 0;
     }
     /* Enabled since genesis */
@@ -219,9 +203,9 @@ _context_create( fd_exec_instr_test_runner_t *        runner,
   slot_ctx->epoch_ctx = epoch_ctx;
   slot_ctx->funk_txn  = funk_txn;
   slot_ctx->acc_mgr   = acc_mgr;
-  slot_ctx->valloc    = fd_scratch_virtual();
 
   /* TODO: Restore slot_bank */
+
   fd_slot_bank_new( &slot_ctx->slot_bank );
   fd_block_block_hash_entry_t * recent_block_hashes = deq_fd_block_block_hash_entry_t_alloc( slot_ctx->valloc );
   slot_ctx->slot_bank.recent_block_hashes.hashes = recent_block_hashes;
@@ -270,49 +254,35 @@ _context_create( fd_exec_instr_test_runner_t *        runner,
     if( !_load_account( &borrowed_accts[j], acc_mgr, funk_txn, &test_ctx->accounts[j] ) )
       return 0;
 
+  /* Restore sysvar cache */
 
-  // ############################################################################################################################################
-  // TODO: UNCOMMENT AFTER THE SYSVAR CACHE CHANGES HAVE BEEN MERGED INTO THE PRIVATE REPO.
-  //
-  // /* Restore sysvar cache */
+  fd_sysvar_cache_restore( slot_ctx->sysvar_cache, acc_mgr, funk_txn );
 
-  // fd_sysvar_cache_restore( slot_ctx->sysvar_cache, acc_mgr, funk_txn );
+  /* Handle undefined behavior if sysvars are malicious (!!!) */
 
-<<<<<<< HEAD
-  // /* Handle undefined behavior if sysvars are malicious (!!!) */
-=======
   /* A NaN rent exemption threshold is U.B. in Solana Labs */
   fd_rent_t const * rent = fd_sysvar_cache_rent( slot_ctx->sysvar_cache );
   if( rent ) {
-    if( ( !fd_double_is_normal( rent->exemption_threshold ) ) |
+    if( ( fd_double_is_normal( rent->exemption_threshold ) ) |
         ( rent->exemption_threshold     <      0.0 ) |
         ( rent->exemption_threshold     >    999.0 ) |
         ( rent->lamports_per_uint8_year > UINT_MAX ) |
         ( rent->burn_percent            >      100 ) )
       return 0;
->>>>>>> main
 
-  // /* A NaN rent exemption threshold is U.B. in Solana Labs */
-  // fd_rent_t const * rent = fd_sysvar_cache_rent( slot_ctx->sysvar_cache );
-  // if( rent ) {
-  //   if( ( fd_double_is_normal( rent->exemption_threshold ) ) |
-  //       ( rent->exemption_threshold     <      0.0 ) |
-  //       ( rent->exemption_threshold     >    999.0 ) |
-  //       ( rent->lamports_per_uint8_year > UINT_MAX ) |
-  //       ( rent->burn_percent            >      100 ) )
-  //     return 0;
-  // }
+    /* Override epoch bank settings */
+    epoch_ctx->epoch_bank.rent = *rent;
+  }
 
-  // /* Override most recent blockhash if given */
-  // fd_recent_block_hashes_t const * rbh = fd_sysvar_cache_recent_block_hashes( slot_ctx->sysvar_cache );
-  // if( rbh && !deq_fd_block_block_hash_entry_t_empty( rbh->hashes ) ) {
-  //   fd_block_block_hash_entry_t const * last = deq_fd_block_block_hash_entry_t_peek_tail_const( rbh->hashes );
-  //   if( last ) {
-  //     *recent_block_hash = *last;
-  //     slot_ctx->slot_bank.lamports_per_signature = last->fee_calculator.lamports_per_signature;
-  //   }
-  // }
-  // ############################################################################################################################################
+  /* Override most recent blockhash if given */
+  fd_recent_block_hashes_t const * rbh = fd_sysvar_cache_recent_block_hashes( slot_ctx->sysvar_cache );
+  if( rbh && !deq_fd_block_block_hash_entry_t_empty( rbh->hashes ) ) {
+    fd_block_block_hash_entry_t const * last = deq_fd_block_block_hash_entry_t_peek_tail_const( rbh->hashes );
+    if( last ) {
+      *recent_block_hash = *last;
+      slot_ctx->slot_bank.lamports_per_signature = last->fee_calculator.lamports_per_signature;
+    }
+  }
 
   /* Load instruction accounts */
 
