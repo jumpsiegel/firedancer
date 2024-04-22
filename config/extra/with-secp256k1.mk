@@ -1,3 +1,3 @@
 FD_HAS_SECP256K1:=1
 CFLAGS+=-DFD_HAS_SECP256K1=1
-SECP256K1_LIBS:=opt/lib/libsecp256k1.a
+LDFLAGS+=-Wl,--push-state,-Bstatic -lsecp256k1 -Wl,--pop-state

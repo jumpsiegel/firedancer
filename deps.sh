@@ -5,8 +5,6 @@ set -euo pipefail
 # Change into Firedancer root directory
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-set -euo pipefail
-
 # Load OS information
 OS="$(uname -s)"
 case "$OS" in
@@ -97,20 +95,35 @@ checkout_repo () {
   echo
 }
 
+checkout_gnuweb () {
+  # Skip if dir already exists
+  if [[ -d ./opt/gnuweb/"$1" ]]; then
+    echo "[~] Skipping $1 fetch as \"$(pwd)/opt/gnuweb/$1\" already exists"
+  else
+    echo "[+] Cloning $1 from $2/$3.tar.gz"
+    curl -o - -L "$2/$3.tar.gz" | gunzip | tar xf - -C ./opt/gnuweb
+    mv ./opt/gnuweb/$3 ./opt/gnuweb/$1
+    echo
+  fi
+}
+
 fetch () {
   mkdir -pv ./opt/git
 
-  #checkout_repo zlib      https://github.com/madler/zlib            "v1.2.13"
-  #checkout_repo bzip2     https://sourceware.org/git/bzip2.git      "bzip2-1.0.8"
+  checkout_repo zlib      https://github.com/madler/zlib            "v1.2.13"
   checkout_repo zstd      https://github.com/facebook/zstd          "v1.5.5"
   checkout_repo openssl   https://github.com/openssl/openssl        "openssl-3.3.0"
-  #checkout_repo rocksdb   https://github.com/facebook/rocksdb       "v7.10.2"
+  checkout_repo rocksdb   https://github.com/facebook/rocksdb       "v7.10.2"
   checkout_repo secp256k1 https://github.com/bitcoin-core/secp256k1 "v0.3.2"
-  #checkout_repo libff     https://github.com/firedancer-io/libff.git "develop"
+  checkout_repo snappy    https://github.com/google/snappy          "1.1.10"
+  checkout_repo libff     https://github.com/firedancer-io/libff.git "develop"
+
+#  mkdir -pv ./opt/gnuweb
+#  checkout_gnuweb libmicrohttpd https://ftp.gnu.org/gnu/libmicrohttpd/ "libmicrohttpd-0.9.77"
 }
 
 check_fedora_pkgs () {
-  local REQUIRED_RPMS=( perl autoconf gettext-devel automake flex bison cmake clang protobuf-compiler llvm-toolset lcov )
+  local REQUIRED_RPMS=( perl autoconf gettext-devel automake flex bison cmake clang gmp-devel protobuf-compiler llvm-toolset lcov )
 
   echo "[~] Checking for required RPM packages"
 
@@ -134,8 +147,7 @@ check_fedora_pkgs () {
 }
 
 check_debian_pkgs () {
-  local REQUIRED_DEBS=( perl autoconf gettext automake autopoint flex bison build-essential gcc-multilib protobuf-compiler llvm lcov )
-
+  local REQUIRED_DEBS=( perl autoconf gettext automake autopoint flex bison build-essential gcc-multilib protobuf-compiler llvm lcov libgmp-dev )
 
   echo "[~] Checking for required DEB packages"
 
@@ -256,14 +268,6 @@ install_zlib () {
   echo "[+] Successfully installed zlib"
 }
 
-install_bzip2 () {
-  cd ./opt/git/bzip2
-
-  echo "[+] Installing bzip2 to $PREFIX"
-  "${MAKE[@]}" PREFIX="$PREFIX" install
-  echo "[+] Successfully installed bzip2"
-}
-
 install_zstd () {
   cd ./opt/git/zstd/lib
 
@@ -293,7 +297,7 @@ install_secp256k1 () {
     -DSECP256K1_ENABLE_MODULE_EXTRAKEYS=OFF \
     -DSECP256K1_ENABLE_MODULE_SCHNORRSIG=OFF \
     -DSECP256K1_ENABLE_MODULE_ECDH=OFF \
-    -DCMAKE_C_FLAGS_RELEASE="-O3" \
+    -DCMAKE_C_FLAGS_RELEASE="-march=native -O3" \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 
   echo "[+] Building secp256k1"
@@ -314,6 +318,7 @@ install_openssl () {
     -fPIC \
     --prefix="$PREFIX" \
     --libdir=lib \
+    -march=native \
     no-engine \
     no-static-engine \
     no-weak-ssl-ciphers \
@@ -392,11 +397,11 @@ install_rocksdb () {
     -DCMAKE_INSTALL_PREFIX:PATH="$PREFIX" \
     -DCMAKE_INSTALL_LIBDIR="lib" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DROCKSDB_BUILD_SHARED=OFF \
+    -DROCKSDB_BUILD_SHARED=ON \
     -DWITH_GFLAGS=OFF \
     -DWITH_LIBURING=OFF \
-    -DWITH_BZ2=ON \
-    -DWITH_SNAPPY=OFF \
+    -DWITH_BZ2=OFF \
+    -DWITH_SNAPPY=ON \
     -DWITH_ZLIB=ON \
     -DWITH_ZSTD=ON \
     -DWITH_ALL_TESTS=OFF \
@@ -404,18 +409,61 @@ install_rocksdb () {
     -DWITH_CORE_TOOLS=OFF \
     -DWITH_RUNTIME_DEBUG=OFF \
     -DWITH_TESTS=OFF \
-    -DWITH_TOOLS=OFF \
+    -DWITH_TOOLS=ON \
     -DWITH_TRACE_TOOLS=OFF \
     -DZLIB_ROOT="$PREFIX" \
-    -DBZIP2_LIBRARIES="$PREFIX/lib/libbz2.a" \
-    -DBZIP2_INCLUDE_DIR="$PREFIX/include" \
-    -Dzstd_ROOT_DIR="$PREFIX"
+    -Dzstd_ROOT_DIR="$PREFIX" \
+    -DSnappy_LIBRARIES="$PREFIX/lib" \
+    -DSnappy_INCLUDE_DIRS="$PREFIX/include" \
+    -DUSE_RTTI=ON \
+    -DCMAKE_CXX_FLAGS_RELEASE="-march=native" \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 
   local NJOBS
   NJOBS=$(( $(nproc) / 2 ))
   NJOBS=$((NJOBS>0 ? NJOBS : 1))
   make -j $NJOBS
   make install
+}
+
+install_libmicrohttpd () {
+  cd ./opt/gnuweb/libmicrohttpd/
+  ./configure \
+    --prefix="$PREFIX" \
+    --disable-https \
+    --disable-curl  \
+    --disable-dauth \
+    --with-pic
+  make -j
+  make install
+
+  echo "[+] Successfully installed libmicrohttpd"
+}
+
+install_snappy () {
+  cd ./opt/git/snappy
+
+  echo "[+] Configuring snappy"
+  mkdir -p build
+  cd build
+  cmake .. \
+    -G"Unix Makefiles" \
+    -DCMAKE_INSTALL_PREFIX:PATH="" \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS=ON \
+    -DSNAPPY_BUILD_TESTS=OFF \
+    -DSNAPPY_BUILD_BENCHMARKS=OFF \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+  echo "[+] Configured snappy"
+
+  echo "[+] Building snappy"
+  make -j
+  echo "[+] Successfully built snappy"
+
+  echo "[+] Installing snappy to $PREFIX"
+  make install DESTDIR="$PREFIX"
+  echo "[+] Successfully installed snappy"
 }
 
 install_libff () {
@@ -427,12 +475,21 @@ install_libff () {
   cmake .. \
     -G"Unix Makefiles" \
     -DCMAKE_INSTALL_PREFIX:PATH="$PREFIX" \
-    -DCMAKE_INSTALL_LIBDIR="lib"
-  local NJOBS
-  NJOBS=$(( $(nproc) / 2 ))
-  NJOBS=$((NJOBS>0 ? NJOBS : 1))
-  make -j $NJOBS
+    -DCMAKE_INSTALL_LIBDIR="lib" \
+    -DBUILD_GMOCK=OFF \
+    -DBUILD_TESTING=OFF \
+    -DINSTALL_GTEST=OFF \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+  echo "[+] Configured libff"
+
+  echo "[+] Building libff"
+  make -j
+  echo "[+] Successfully built libff"
+
+  echo "[+] Installing libff to $PREFIX"
   make install
+  echo "[+] Successfully installed libff"
 }
 
 install () {
@@ -443,13 +500,24 @@ install () {
 
   mkdir -p ./opt/{include,lib}
 
-  #( install_zlib      )
-  #( install_bzip2     )
+  ( install_zlib      )
   ( install_zstd      )
   ( install_secp256k1 )
+  ( install_snappy    )
+  ( install_rocksdb   )
   ( install_openssl   )
-  #( install_rocksdb   )
-  #( install_libff     )
+#  ( install_libmicrohttpd   )
+  ( install_libff     )
+
+  # Remove cmake and pkgconfig files, so we don't accidentally
+  # depend on them.
+  rm -rf ./opt/lib/cmake ./opt/lib/pkgconfig ./opt/lib64/pkgconfig
+
+  # Merge lib64 with lib
+  if [[ -d ./opt/lib64 ]]; then
+    find ./opt/lib64/ -mindepth 1 -exec mv -t ./opt/lib/ {} +
+    rm -rf ./opt/lib64
+  fi
 
   # Remove cmake and pkgconfig files, so we don't accidentally
   # depend on them.
@@ -462,7 +530,7 @@ if [[ $# -eq 0 ]]; then
   echo "[~] This will fetch, build, and install Firedancer's dependencies into $(pwd)/opt"
   echo "[~] For help, run: $0 help"
   echo
-  echo "[~] Running $0 fetch check install"
+  echo "[~] Running $0 install"
 
   read -r -p "[?] Continue? (y/N) " choice
   case "$choice" in
@@ -497,6 +565,8 @@ while [[ $# -gt 0 ]]; do
       ;;
     install)
       shift
+      fetch
+      check
       install
       ;;
     *)

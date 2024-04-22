@@ -32,7 +32,7 @@
    These are the main technical innovations that enable Solana to work
    well.
 
-   What about Proof of History? 
+   What about Proof of History?
 
    One particular niche problem is about the leader schedule.  When the
    leader computer is moving from one bank to another, the new bank must
@@ -80,10 +80,10 @@
     (1) Whenever any other leader in the network finishes a slot, and
         the slot is determined to be the best one to build off of, this
         tile gets "reset" onto that block, the so called "reset slot".
-    
+
     (2) The tile is constantly doing busy work, hash(hash(hash(...))) on
         top of the last reset slot, even when it is not leader.
-    
+
     (3) When the tile becomes leader, it continues hashing from where it
         was.  Typically, the prior leader finishes their slot, so the
         reset slot will be the parent one, and this tile only publishes
@@ -163,7 +163,7 @@
         hashcnt rate of the proof of history component.  This value is
         fixed at genesis time, and could be different for other chains
         and development environments which we also support.
-        
+
         There is a set of features, which increase the number of hashes
         per tick while keeping tick duration constant, which make the
         time per hashcnt lower although they are not yet deployed.  See
@@ -182,7 +182,7 @@
         The leader needs to periodically checkpoint the hash value
         associated with a given hashcnt so that they can publish it to
         other nodes for verification.
-        
+
         On mainnet-beta, testnet, and devnet this occurs once every
         12,500 hashcnts, or approximately once every 6.25 milliseconds.
         This value is determined at genesis time, and could be
@@ -1482,6 +1482,41 @@ void
 fd_ext_poh_publish_cluster_info( uchar * data,
                                  ulong   data_len ) {
   poh_link_publish( &crds_shred, 2UL, data, data_len );
+}
+
+/* The Solana Labs client needs to communicate to the shred tile what
+   the shred version is on boot, but shred tile does not live in the
+   same address space, so have the PoH tile pass the value through
+   via. a shared memory ulong. */
+
+static volatile ulong * fd_shred_version;
+
+void
+fd_ext_shred_set_shred_version( ulong shred_version ) {
+  while( FD_UNLIKELY( !fd_shred_version ) ) FD_SPIN_PAUSE();
+  *fd_shred_version = shred_version;
+}
+
+
+void
+fd_ext_poh_publish_gossip_vote( uchar * data,
+                                ulong   data_len ) {
+  (void)data; (void)data_len;
+  //poh_link_publish( &gossip_pack, 1UL, data, data_len );
+}
+
+void
+fd_ext_poh_publish_leader_schedule( uchar * data,
+                                    ulong   data_len ) {
+  (void)data; (void)data_len;
+  //poh_link_publish( &stake_out, 2UL, data, data_len );
+}
+
+void
+fd_ext_poh_publish_cluster_info( uchar * data,
+                                 ulong   data_len ) {
+  (void)data; (void)data_len;
+  //poh_link_publish( &crds_shred, 2UL, data, data_len );
 }
 
 static void

@@ -269,6 +269,17 @@ static int parse_key_value( config_t *   config,
 
   ENTRY_USHORT( ., tiles.metric,        prometheus_listen_port                                    );
 
+  ENTRY_STR   ( ., tiles.replay,        genesis                                                   );
+  ENTRY_STR   ( ., tiles.replay,        snapshot                                                  );
+  ENTRY_STR   ( ., tiles.replay,        incremental                                               );
+  ENTRY_UINT  ( ., tiles.replay,        pages                                                     );
+  ENTRY_UINT  ( ., tiles.replay,        txn_max                                                   );
+  ENTRY_UINT  ( ., tiles.replay,        index_max                                                 );
+  ENTRY_UINT  ( ., tiles.replay,        shred_max                                                 );
+  ENTRY_UINT  ( ., tiles.replay,        slot_history_max                                          );
+
+  ENTRY_UINT ( ., tiles.store,         snapshot_slot                                             );
+
   ENTRY_BOOL  ( ., development,         sandbox                                                   );
   ENTRY_BOOL  ( ., development,         no_clone                                                  );
   ENTRY_BOOL  ( ., development,         no_solana_labs                                            );

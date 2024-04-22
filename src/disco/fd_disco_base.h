@@ -15,6 +15,9 @@
 #define POH_PKT_TYPE_BECAME_LEADER (1UL)
 #define POH_PKT_TYPE_DONE_PACKING  (2UL)
 
+#define REPLAY_FLAG_FINALIZE_BLOCK      (0x01UL)
+#define REPLAY_FLAG_PACKED_MICROBLOCK   (0x02UL)
+
 /* FD_NET_MTU is the max full packet size, with ethernet, IP, and UDP
    headers that can go in or out of the net tile.  2048 is the maximum
    XSK entry size, so this value follows naturally. */
@@ -63,6 +66,21 @@ fd_disco_netmux_sig( uint   src_ip_addr,
 FD_FN_CONST static inline ulong fd_disco_netmux_sig_hash  ( ulong sig ) { return (sig>>56UL) & 0xFFUL; }
 FD_FN_CONST static inline ulong fd_disco_netmux_sig_proto ( ulong sig ) { return (sig>>48UL) & 0xFFUL; }
 FD_FN_CONST static inline uint  fd_disco_netmux_sig_dst_ip( ulong sig ) { return (uint)((sig>>12UL) & 0xFFFFFFFFUL); }
+
+FD_FN_CONST static inline ulong
+fd_disco_replay_sig( ulong slot,
+                     ulong flags ) {
+   /* The high 7 bits of the low byte of the signature field is the bank
+      idx.  Banks will filter to only handle frags with their own idx.
+      The higher 7 bytes are the slot number.  Technically, the slot
+      number is a ulong, but it won't hit 256^7 for about 10^9 years at
+      the current rate.  The lowest bit of the low byte is the packet
+      type. */
+  return (slot << 8) | (flags & 0xFFUL);
+}
+
+FD_FN_CONST static inline ulong fd_disco_replay_sig_flags( ulong sig ) { return (sig & 0xFFUL); }
+FD_FN_CONST static inline ulong fd_disco_replay_sig_slot( ulong sig ) { return (sig >> 8); }
 
 /* fd_disco_netmux_sig_hdr_sz extracts the total size of the Ethernet,
    IP, and UDP headers from the netmux signature field.  The UDP payload

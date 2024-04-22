@@ -77,6 +77,7 @@
 #include "../../flamenco/runtime/fd_hashes.h"
 #include "../../flamenco/runtime/program/fd_bpf_program_util.h"
 #include "../../flamenco/runtime/sysvar/fd_sysvar_epoch_schedule.h"
+#include "fd_replay.h"
 #ifdef FD_HAS_LIBMICROHTTP
 #include "../rpc/fd_rpc_service.h"
 #endif
@@ -317,6 +318,7 @@ fd_tvu_create_socket( fd_gossip_peer_addr_t * addr ) {
 struct fd_turbine_thread_args {
   int            tvu_fd;
   fd_replay_t *  replay;
+  fd_store_t *   store;
 };
 
 static int fd_turbine_thread( int argc, char ** argv );
@@ -435,7 +437,6 @@ fd_tvu_main( fd_runtime_ctx_t *    runtime_ctx,
     while( replay->first_turbine_slot == FD_SLOT_NULL ){
       struct timespec ts = { .tv_sec = 0, .tv_nsec = (long)1e6 };
       nanosleep(&ts, NULL);
-      if( fd_tile_shutdown_flag ) goto shutdown;
     }
     slot_ctx = fd_tvu_late_incr_snap( runtime_ctx, runtime_args, replay, slot_ctx->slot_bank.slot, slot_ctx->towers );
     runtime_ctx->need_incr_snap = 0;
@@ -443,7 +444,7 @@ fd_tvu_main( fd_runtime_ctx_t *    runtime_ctx,
 
   long last_call  = fd_log_wallclock();
   long last_stats = last_call;
-  while( FD_LIKELY( !fd_tile_shutdown_flag ) ) {
+  for (;;) {
 
     /* Housekeeping */
     long now = fd_log_wallclock();
@@ -472,10 +473,6 @@ fd_tvu_main( fd_runtime_ctx_t *    runtime_ctx,
       fd_solcap_writer_flush( runtime_ctx->capture_ctx->capture );
   }
 
- shutdown:
-  close( gossip_fd );
-  close( repair_fd );
-  close( tvu_fd );
   return 0;
 }
 
@@ -515,7 +512,7 @@ fd_turbine_thread( int argc, char ** argv ) {
     msgs[i].msg_hdr.msg_name    = sockaddrs[i];                                                    \
     msgs[i].msg_hdr.msg_namelen = sizeof( struct sockaddr_in6 );                                   \
   }
-  while( FD_LIKELY( !fd_tile_shutdown_flag ) ) {
+  for (;;) {
     CLEAR_MSGS;
     int tvu_rc = recvmmsg( tvu_fd, msgs, VLEN, MSG_DONTWAIT, NULL );
     if( tvu_rc < 0 ) {
@@ -547,7 +544,7 @@ fd_repair_thread( int argc, char ** argv ) {
   struct iovec   iovecs[VLEN];
   uchar          bufs[VLEN][FD_ETH_PAYLOAD_MAX];
   uchar sockaddrs[VLEN][sizeof( struct sockaddr_in6 )]; /* sockaddr is smaller than sockaddr_in6 */
-  while( FD_LIKELY( !fd_tile_shutdown_flag ) ) {
+  for (;;) {
     long now = fd_log_wallclock();
     fd_repair_settime( repair, now );
 
@@ -585,7 +582,7 @@ fd_gossip_thread( int argc, char ** argv ) {
   struct iovec   iovecs[VLEN];
   uchar          bufs[VLEN][FD_ETH_PAYLOAD_MAX];
   uchar sockaddrs[VLEN][sizeof( struct sockaddr_in6 )]; /* sockaddr is smaller than sockaddr_in6 */
-  while( FD_LIKELY( !fd_tile_shutdown_flag ) ) {
+  for (;;) {
     long now = fd_log_wallclock();
     fd_gossip_settime( gossip, now );
 
@@ -834,7 +831,7 @@ void slot_ctx_setup( fd_valloc_t valloc,
 
   out->exec_epoch_ctx   = fd_exec_epoch_ctx_join( fd_exec_epoch_ctx_new( epoch_ctx_mem ) );
   out->fork             = fd_fork_pool_ele_acquire( fork_pool );
-  out->exec_slot_ctx    = fd_exec_slot_ctx_join( fd_exec_slot_ctx_new( &fork_pool->slot_ctx ) );
+  out->exec_slot_ctx    = fd_exec_slot_ctx_join( fd_exec_slot_ctx_new( &fork_pool->slot_ctx, valloc ) );
 
   FD_TEST( out->exec_slot_ctx );
 
@@ -915,6 +912,45 @@ void snapshot_setup( char const * snapshot,
   fd_runtime_cleanup_incinerator( exec_slot_ctx );
 }
 
+void
+snapshot_insert( fd_fork_t *       fork,
+                 ulong             snapshot_slot,
+                 fd_blockstore_t * blockstore,
+                 fd_replay_t *     replay,
+                 fd_tower_t *      towers ) {
+
+  /* Add snapshot slot to blockstore.*/
+
+  fd_blockstore_snapshot_insert( blockstore, &fork->slot_ctx.slot_bank );
+
+  /* Add snapshot slot to frontier. */
+
+  fork->slot = snapshot_slot;
+  fd_fork_frontier_ele_insert( replay->forks->frontier, fork, replay->forks->pool );
+
+  /* Set the towers pointer to passed-in towers mem. */
+
+  fork->slot_ctx.towers = towers;
+
+  /* Add snapshot slot to ghost. */
+
+  fd_slot_hash_t slot_hash = { .slot = snapshot_slot, .hash = fork->slot_ctx.slot_bank.banks_hash };
+  fd_ghost_leaf_insert( replay->bft->ghost, &slot_hash, NULL );
+
+  /* Add snapshot slot to bft. */
+
+  replay->bft->snapshot_slot = snapshot_slot;
+
+  /* Add snapshot slot to bash hash cmp. */
+
+  replay->epoch_ctx->bank_hash_cmp->slot = snapshot_slot;
+
+  /* Set the SMR on replay.*/
+
+  replay->smr = snapshot_slot;
+  replay->snapshot_slot = snapshot_slot;
+}
+
 static fd_exec_slot_ctx_t *
 fd_tvu_late_incr_snap( fd_runtime_ctx_t *  runtime_ctx,
                        fd_runtime_args_t * runtime_args,
@@ -924,7 +960,7 @@ fd_tvu_late_incr_snap( fd_runtime_ctx_t *  runtime_ctx,
   (void)runtime_ctx;
 
   fd_fork_t *          fork     = fd_fork_pool_ele_acquire( replay->forks->pool );
-  fd_exec_slot_ctx_t * slot_ctx = fd_exec_slot_ctx_join( fd_exec_slot_ctx_new( &fork->slot_ctx ) );
+  fd_exec_slot_ctx_t * slot_ctx = fd_exec_slot_ctx_join( fd_exec_slot_ctx_new( &fork->slot_ctx, replay->valloc ) );
   slot_ctx->acc_mgr               = replay->acc_mgr;
   slot_ctx->blockstore            = replay->blockstore;
   slot_ctx->valloc                = replay->valloc;
@@ -944,25 +980,7 @@ fd_tvu_late_incr_snap( fd_runtime_ctx_t *  runtime_ctx,
   slot_ctx->slot_bank.collected_fees = 0;
   slot_ctx->slot_bank.collected_rent = 0;
 
-  /* add it to the frontier */
-  fork->slot = snapshot_slot;
-  replay->epoch_ctx->bank_hash_cmp->slot = snapshot_slot;
-  fd_fork_frontier_ele_insert( replay->forks->frontier, fork, replay->forks->pool );
-  fork->slot_ctx.towers = towers;
-  FD_TEST( fork->slot_ctx.towers );
-
-  /* fake the snapshot slot's block and mark it as executed */
-  fd_blockstore_slot_map_t * slot_entry =
-    fd_blockstore_slot_map_insert( fd_blockstore_slot_map( replay->blockstore ), snapshot_slot );
-  slot_entry->block.data_gaddr = ULONG_MAX;
-  slot_entry->block.flags = fd_uchar_set_bit( slot_entry->block.flags, FD_BLOCK_FLAG_SNAPSHOT );
-  slot_entry->block.flags = fd_uchar_set_bit( slot_entry->block.flags, FD_BLOCK_FLAG_PROCESSED );
-  slot_entry->block.bank_hash = slot_ctx->slot_bank.banks_hash;
-
-  fd_slot_hash_t slot_hash = { .slot = snapshot_slot, .hash = slot_entry->block.bank_hash };
-  fd_ghost_leaf_insert( replay->bft->ghost, &slot_hash, NULL );
-
-  replay->bft->snapshot_slot = snapshot_slot;
+  snapshot_insert( fork, snapshot_slot, replay->blockstore, replay, towers);
 
   return slot_ctx;
 }
@@ -1160,6 +1178,19 @@ fd_tvu_main_setup( fd_runtime_ctx_t *    runtime_ctx,
     replay_setup_out.replay->bft = bft;
 
     /**********************************************************************/
+    /* Store                                                              */
+    /**********************************************************************/
+    ulong snapshot_slot = slot_ctx_setup_out.exec_slot_ctx->slot_bank.slot;
+    void *        store_mem = fd_valloc_malloc( valloc, fd_store_align(), fd_store_footprint() );
+    fd_store_t * store     = fd_store_join( fd_store_new( store_mem, snapshot_slot ) );
+    store->blockstore = blockstore_setup_out.blockstore;
+    store->smr = snapshot_slot;
+    store->snapshot_slot = snapshot_slot;
+    store->valloc = valloc;
+
+    // repair_ctx->store = store;
+
+    /**********************************************************************/
     /* Gossip                                                             */
     /**********************************************************************/
 
@@ -1236,6 +1267,7 @@ fd_tvu_main_setup( fd_runtime_ctx_t *    runtime_ctx,
       }
 
       fd_repair_set_stake_weights( repair, stake_weights, stake_weights_cnt );
+      fd_gossip_set_stake_weights( gossip, stake_weights, stake_weights_cnt );
     } FD_SCRATCH_SCOPE_END;
 
     replay_setup_out.replay->blockstore  = blockstore_setup_out.blockstore;
@@ -1245,41 +1277,12 @@ fd_tvu_main_setup( fd_runtime_ctx_t *    runtime_ctx,
     replay_setup_out.replay->repair      = repair;
     replay_setup_out.replay->gossip      = gossip;
 
-    /* bootstrap replay with the snapshot slot */
-    ulong snapshot_slot = slot_ctx_setup_out.exec_slot_ctx->slot_bank.slot;
-    replay_setup_out.replay->smr         = snapshot_slot;
-    slot_ctx_setup_out.fork->slot   = snapshot_slot;
+    /* BFT update epoch stakes */
 
     fd_bft_epoch_stake_update(bft, slot_ctx_setup_out.exec_epoch_ctx);
 
-    slot_ctx_setup_out.exec_slot_ctx->towers = towers;
-    if( !runtime_ctx->need_incr_snap ) {
-      /* add it to the frontier */
-      fd_fork_frontier_ele_insert( replay_setup_out.replay->forks->frontier,
-                                   slot_ctx_setup_out.fork,
-                                   replay_setup_out.replay->forks->pool );
-
-      /* fake the snapshot slot's block and mark it as executed */
-      fd_blockstore_slot_map_t * slot_entry = fd_blockstore_slot_map_insert(
-          fd_blockstore_slot_map( blockstore_setup_out.blockstore ), snapshot_slot );
-      slot_entry->block.data_gaddr = ULONG_MAX;
-      slot_entry->block.flags = fd_uchar_set_bit( slot_entry->block.flags, FD_BLOCK_FLAG_SNAPSHOT );
-      slot_entry->block.flags =
-          fd_uchar_set_bit( slot_entry->block.flags, FD_BLOCK_FLAG_PROCESSED );
-      slot_entry->block.bank_hash = slot_ctx_setup_out.exec_slot_ctx->slot_bank.banks_hash;
-
-      fd_hash_t const * snapshot_bank_hash =
-          fd_blockstore_bank_hash_query( bft->blockstore, snapshot_slot );
-      FD_LOG_NOTICE( (
-          "snapshot bank hash %32J %32J", slot_entry->block.bank_hash.hash, snapshot_bank_hash->hash ) );
-
-      fd_slot_hash_t slot_hash = { .slot = snapshot_slot, .hash = slot_entry->block.bank_hash };
-      fd_ghost_leaf_insert( bft->ghost, &slot_hash, NULL );
-
-      bft->snapshot_slot = snapshot_slot;
-    }
-
     /* bank hash cmp */
+
     int    bank_hash_cmp_lg_slot_cnt = 10; /* max vote lag 512 => fill ratio 0.5 => 1024 */
     void * bank_hash_cmp_mem =
         fd_wksp_alloc_laddr( wksp,
@@ -1288,7 +1291,17 @@ fd_tvu_main_setup( fd_runtime_ctx_t *    runtime_ctx,
                              42UL );
     replay_setup_out.replay->epoch_ctx->bank_hash_cmp = fd_bank_hash_cmp_join(
         fd_bank_hash_cmp_new( bank_hash_cmp_mem, bank_hash_cmp_lg_slot_cnt ) );
-    replay_setup_out.replay->epoch_ctx->bank_hash_cmp->slot = snapshot_slot;
+
+    /* bootstrap replay with the snapshot slot */
+
+    slot_ctx_setup_out.exec_slot_ctx->towers = towers;
+    if( !runtime_ctx->need_incr_snap ) {
+      snapshot_insert( slot_ctx_setup_out.fork,
+                       slot_ctx_setup_out.exec_slot_ctx->slot_bank.slot,
+                       blockstore_setup_out.blockstore,
+                       replay_setup_out.replay,
+                       towers );
+    }
 
     /* TODO @yunzhang open files, set the replay pointers, etc. you need here*/
     if (args->shred_cap == NULL) {
@@ -1366,7 +1379,7 @@ fd_tvu_parse_args( fd_runtime_args_t * args, int argc, char ** argv ) {
       fd_env_strip_cmdline_cstr( &argc, &argv, "--check_hash", NULL, "false" );
   args->capture_fpath = fd_env_strip_cmdline_cstr( &argc, &argv, "--capture", NULL, NULL );
   /* Disabling capture_txns speeds up runtime and makes solcap captures significantly smaller */
-  args->capture_txns  = fd_env_strip_cmdline_cstr( &argc, &argv, "--capture-txns", NULL, "true" ); 
+  args->capture_txns  = fd_env_strip_cmdline_cstr( &argc, &argv, "--capture-txns", NULL, "true" );
   args->trace_fpath   = fd_env_strip_cmdline_cstr( &argc, &argv, "--trace", NULL, NULL );
   /* TODO @yunzhang: I added this to get the shred_cap file path,
    *  but shred_cap is now NULL despite there is such an entry in the toml config */
