@@ -1,4 +1,8 @@
 #include "fd_solcap_writer.h"
+<<<<<<< HEAD
+=======
+#include "fd_solcap.pb.h"
+>>>>>>> main
 #include "fd_solcap_proto.h"
 #include "../nanopb/pb_encode.h"
 
@@ -545,6 +549,7 @@ fd_solcap_write_bank_preimage2( fd_solcap_writer_t *     writer,
   return 0;
 }
 
+<<<<<<< HEAD
 int fd_solcap_write_transaction( fd_solcap_writer_t * writer,
                                  void const *         txn_sig,
                                  int                  txn_err,
@@ -568,6 +573,8 @@ int fd_solcap_write_transaction( fd_solcap_writer_t * writer,
   return fd_solcap_write_transaction2( writer, txn_pb );
 }
 
+=======
+>>>>>>> main
 int fd_solcap_write_transaction2( fd_solcap_writer_t *    writer,
                                   fd_solcap_Transaction * txn ) {
 

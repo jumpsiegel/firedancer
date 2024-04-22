@@ -87,6 +87,7 @@ fd_exec_instr_test_runner_delete( fd_exec_instr_test_runner_t * runner ) {
   return runner;
 }
 
+<<<<<<< HEAD
 // ############################################################################################################################################
 // TODO: UNCOMMENT AFTER THE SYSVAR CACHE CHANGES HAVE BEEN MERGED INTO THE PRIVATE REPO.
 //
@@ -99,6 +100,16 @@ fd_exec_instr_test_runner_delete( fd_exec_instr_test_runner_t * runner ) {
 //   return !( (!(u.ul>>52 & 0x7ff)) & (u.ul<<1) );
 // }
 // ############################################################################################################################################
+=======
+static int
+fd_double_is_normal( double x ) {
+	union {
+    double d;
+    ulong  ul;
+  } u = { .d = x };
+  return !( (!(u.ul>>52 & 0x7ff)) && (u.ul<<1) );
+}
+>>>>>>> main
 
 static int
 _load_account( fd_borrowed_account_t *           acc,
@@ -267,7 +278,19 @@ _context_create( fd_exec_instr_test_runner_t *        runner,
 
   // fd_sysvar_cache_restore( slot_ctx->sysvar_cache, acc_mgr, funk_txn );
 
+<<<<<<< HEAD
   // /* Handle undefined behavior if sysvars are malicious (!!!) */
+=======
+  /* A NaN rent exemption threshold is U.B. in Solana Labs */
+  fd_rent_t const * rent = fd_sysvar_cache_rent( slot_ctx->sysvar_cache );
+  if( rent ) {
+    if( ( !fd_double_is_normal( rent->exemption_threshold ) ) |
+        ( rent->exemption_threshold     <      0.0 ) |
+        ( rent->exemption_threshold     >    999.0 ) |
+        ( rent->lamports_per_uint8_year > UINT_MAX ) |
+        ( rent->burn_percent            >      100 ) )
+      return 0;
+>>>>>>> main
 
   // /* A NaN rent exemption threshold is U.B. in Solana Labs */
   // fd_rent_t const * rent = fd_sysvar_cache_rent( slot_ctx->sysvar_cache );

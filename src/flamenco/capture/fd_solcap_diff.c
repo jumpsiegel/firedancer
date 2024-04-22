@@ -4,6 +4,10 @@
 #include "fd_solcap.pb.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../runtime/fd_runtime.h"
+<<<<<<< HEAD
+=======
+#include "../types/fd_types.h"
+>>>>>>> main
 #include "../types/fd_types_yaml.h"
 #include "../nanopb/pb_decode.h"
 
@@ -13,6 +17,11 @@
 #include <fcntl.h>    /* open(2) */
 #include <unistd.h>   /* close(2) */
 
+<<<<<<< HEAD
+=======
+#pragma GCC diagnostic ignored "-Wformat"
+#pragma GCC diagnostic ignored "-Wformat-extra-args"
+>>>>>>> main
 
 /* TODO: Ugly -- These should not be hard coded! */
 #define SOLCAP_FILE_NAME_LEN (13UL)
@@ -28,10 +37,17 @@ _stake_program_address[ 32 ] =
   "\x06\xa1\xd8\x17\x91\x37\x54\x2a\x98\x34\x37\xbd\xfe\x2a\x7a\xb2"
   "\x55\x7f\x53\x5c\x8a\x78\x72\x2b\x68\xa4\x9d\xc0\x00\x00\x00\x00";
 
+<<<<<<< HEAD
 static void 
 normalize_filename( const char * original_str, char * file_name, char prefix ) {
   /* We either need to truncate if too long or pad if too short (16 chars) */
   
+=======
+static void
+normalize_filename( const char * original_str, char * file_name, char prefix ) {
+  /* We either need to truncate if too long or pad if too short (16 chars) */
+
+>>>>>>> main
   file_name[0] = prefix;
   ulong original_str_len = strlen( original_str ) - SOLCAP_SUFFIX_LEN + 1;
   if ( original_str_len <= SOLCAP_FILE_NAME_LEN ) {
@@ -43,7 +59,11 @@ normalize_filename( const char * original_str, char * file_name, char prefix ) {
   else {
     ulong start_idx = original_str_len - SOLCAP_FILE_NAME_LEN;
     fd_memcpy( file_name + 1, original_str + start_idx, SOLCAP_FILE_NAME_LEN );
+<<<<<<< HEAD
     
+=======
+
+>>>>>>> main
   }
   file_name[ SOLCAP_FILE_NAME_LEN ] = '\0';
 }
@@ -105,7 +125,11 @@ fd_solcap_differ_new( fd_solcap_differ_t * diff,
     /* Read file header */
     fd_solcap_fhdr_t hdr[1];
     if( FD_UNLIKELY( 1UL!=fread( hdr, sizeof(fd_solcap_fhdr_t), 1UL, stream ) ) ) {
+<<<<<<< HEAD
       FD_LOG_WARNING(( "Failed to read file=%s header (%d-%s)", 
+=======
+      FD_LOG_WARNING(( "Failed to read file=%s header (%d-%s)",
+>>>>>>> main
                        diff->file_paths[i], errno, strerror( errno ) ));
       return NULL;
     }
@@ -168,11 +192,19 @@ fd_solcap_differ_sync( fd_solcap_differ_t * diff, ulong start_slot, ulong end_sl
 
     /* Handle cases where slot is skipped in one or the other */
     if ( FD_UNLIKELY( prev_slot0 < slot1 && slot0 > slot1 ) ) {
+<<<<<<< HEAD
       FD_LOG_WARNING(("Slot range (%lu,%lu) skipped in file=%s\n", 
                       diff->file_paths[0], prev_slot0, slot0));
     }
     else if ( FD_UNLIKELY( prev_slot1 < slot0 && slot1 > slot0 ) ) {
       FD_LOG_WARNING(("Slot range (%lu,%lu) skipped in file=%s\n", 
+=======
+      FD_LOG_WARNING(("Slot range (%lu,%lu) skipped in file=%s\n",
+                      diff->file_paths[0], prev_slot0, slot0));
+    }
+    else if ( FD_UNLIKELY( prev_slot1 < slot0 && slot1 > slot0 ) ) {
+      FD_LOG_WARNING(("Slot range (%lu,%lu) skipped in file=%s\n",
+>>>>>>> main
                       diff->file_paths[1], prev_slot1, slot1));
     }
 
@@ -754,11 +786,19 @@ fd_solcap_diff_bank( fd_solcap_differ_t * diff ) {
 /* Diffs two transaction results with each other. */
 static void
 fd_solcap_transaction_fd_diff( fd_solcap_txn_differ_t * txn_differ ) {
+<<<<<<< HEAD
   if ( FD_UNLIKELY( memcmp( txn_differ->transaction[0].txn_sig, 
                             txn_differ->transaction[1].txn_sig, 32UL ) != 0 ) ) {
     /* Transactions don't line up. */
     FD_LOG_WARNING(("Transaction signatures are different for slot=%lu, signature=(%32J != %32J)." 
                     "It is possible that either the transactions are out of order or some transactions are missing.", 
+=======
+  if ( FD_UNLIKELY( memcmp( txn_differ->transaction[0].txn_sig,
+                            txn_differ->transaction[1].txn_sig, 32UL ) != 0 ) ) {
+    /* Transactions don't line up. */
+    FD_LOG_WARNING(("Transaction signatures are different for slot=%lu, signature=(%32J != %32J)."
+                    "It is possible that either the transactions are out of order or some transactions are missing.",
+>>>>>>> main
                     txn_differ->transaction[0].slot, txn_differ->transaction[0].txn_sig, txn_differ->transaction[1].txn_sig));
   }
   else {
@@ -767,7 +807,11 @@ fd_solcap_transaction_fd_diff( fd_solcap_txn_differ_t * txn_differ ) {
     if ( diff_txns || diff_cus ) {
       printf(
         "\nslot:             %lu\n"
+<<<<<<< HEAD
         "txn_sig:         '%64J'\n", 
+=======
+        "txn_sig:         '%64J'\n",
+>>>>>>> main
         txn_differ->transaction[0].slot,
         txn_differ->transaction[0].txn_sig );
     }
@@ -791,8 +835,13 @@ fd_solcap_transaction_fd_diff( fd_solcap_txn_differ_t * txn_differ ) {
 /* Diffs firedancer transaction result with solana's result iff it is included
    in the solcap. The solana result comes from rocksdb. This diff is generated
    from just one fd_solcap_Transaction object */
+<<<<<<< HEAD
 static void 
 fd_solcap_transaction_solana_diff( fd_solcap_Transaction * transaction,                                              
+=======
+static void
+fd_solcap_transaction_solana_diff( fd_solcap_Transaction * transaction,
+>>>>>>> main
                                    ulong start_slot,
                                    ulong end_slot ) {
   if ( transaction->slot < start_slot || transaction->slot > end_slot ) {
@@ -806,7 +855,11 @@ fd_solcap_transaction_solana_diff( fd_solcap_Transaction * transaction,
 
   /* Only print a diff if cus or transaction result is different */
   /* FIXME: replace with this once CU issue is fixed */
+<<<<<<< HEAD
   // if ( !!(meta.fd_txn_err) != !!(meta.solana_txn_err) || 
+=======
+  // if ( !!(meta.fd_txn_err) != !!(meta.solana_txn_err) ||
+>>>>>>> main
   //       meta.fd_cus_used != meta.solana_cus_used ) {
   if ( !!(transaction->fd_txn_err) != !!(transaction->solana_txn_err) || 1 ) {
     printf(
@@ -831,7 +884,11 @@ fd_solcap_transaction_solana_diff( fd_solcap_Transaction * transaction,
   }
 }
 
+<<<<<<< HEAD
 static void 
+=======
+static void
+>>>>>>> main
 fd_solcap_get_transaction_from_iter( fd_solcap_txn_differ_t * differ, ulong idx ) {
   if ( fd_solcap_chunk_iter_done( &differ->iter[idx] ) )
     return;
@@ -861,7 +918,11 @@ fd_solcap_transaction_iter( fd_solcap_txn_differ_t * txn_differ, ulong idx ) {
   }
 }
 
+<<<<<<< HEAD
 static void 
+=======
+static void
+>>>>>>> main
 fd_solcap_txn_differ_advance( fd_solcap_txn_differ_t * txn_differ ) {
   while ( !fd_solcap_chunk_iter_done( &txn_differ->iter[0] ) &&
           !fd_solcap_chunk_iter_done( &txn_differ->iter[1] ) ) {
@@ -888,7 +949,11 @@ static void fd_solcap_txn_differ_sync( fd_solcap_txn_differ_t * txn_differ ) {
 
   /* Get first transaction on both */
   fd_solcap_get_transaction_from_iter( txn_differ, 0 );
+<<<<<<< HEAD
   fd_solcap_get_transaction_from_iter( txn_differ, 1 );  
+=======
+  fd_solcap_get_transaction_from_iter( txn_differ, 1 );
+>>>>>>> main
 
   for (;;) {
     /* If one is done but not the other, iterate through the rest of the
@@ -936,7 +1001,11 @@ static void fd_solcap_transaction_diff( FILE * file_zero, FILE * file_one ) {
   fd_solcap_fhdr_t fhdr_one[1];
   ulong n_zero = fread( fhdr_zero, sizeof(fd_solcap_fhdr_t), 1UL, file_zero );
   ulong n_one  = fread( fhdr_one, sizeof(fd_solcap_fhdr_t), 1UL, file_one );
+<<<<<<< HEAD
     
+=======
+
+>>>>>>> main
   if ( FD_UNLIKELY( n_zero != 1UL ) ) {
     FD_LOG_ERR(( "fread file header failed (%d-%s)", errno, strerror( errno ) ));
   }
@@ -1002,7 +1071,11 @@ main( int     argc,
   ulong        scratch_mb = fd_env_strip_cmdline_ulong( &argc, &argv, "--scratch-mb", NULL, 1024UL     );
   int          verbose    = fd_env_strip_cmdline_int  ( &argc, &argv, "-v",           NULL, 1          );
   char const * dump_dir   = fd_env_strip_cmdline_cstr ( &argc, &argv, "--dump-dir",   NULL, "dump"     );
+<<<<<<< HEAD
   ulong        start_slot = fd_env_strip_cmdline_ulong( &argc, &argv, "--start-slot", NULL, 0UL        ); 
+=======
+  ulong        start_slot = fd_env_strip_cmdline_ulong( &argc, &argv, "--start-slot", NULL, 0UL        );
+>>>>>>> main
   ulong        end_slot   = fd_env_strip_cmdline_ulong( &argc, &argv, "--end-slot",   NULL, ULONG_MAX  );
 
   ulong page_sz = fd_cstr_to_shmem_page_sz( _page_sz );
